@@ -1,0 +1,22 @@
+# Secrets / credentials
+.env
+auth/
+.claude/
+# Real handles file holds live Postiz ids — commit handles.example.yaml instead
+products/arboryx.ai/handles.yaml
+
+# Logs
+*.log
+dev-utils/error.log
+
+# Local scratch notes (session ids, OAuth probe URLs, etc.)
+notes.txt
+
+# Local data — posted-log SQLite + generated imagery cache (per-machine, not shared)
+data/posted_log.sqlite
+data/posted_log.sqlite-journal
+data/imagery_cache/
+
+# Python
+__pycache__/
+*.pyc
