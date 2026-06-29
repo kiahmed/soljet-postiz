@@ -1,0 +1,49 @@
+#cloud-config
+# Bootstraps an Ubuntu 24.04 VM for running the Postiz docker-compose stack.
+# Consumed by azure-deploy.sh — values in {{...}} are substituted before upload.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - ufw
+  - jq
+
+write_files:
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "20m", "max-file": "5" }
+      }
+
+runcmd:
+  # --- Install Docker Engine + compose plugin from Docker's apt repo ---
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  - usermod -aG docker {{ADMIN_USER}}
+
+  # --- Bump vm.max_map_count for Elasticsearch (Temporal dep) ---
+  - sysctl -w vm.max_map_count=262144
+  - echo "vm.max_map_count=262144" > /etc/sysctl.d/99-elasticsearch.conf
+
+  # --- App directory ---
+  - mkdir -p {{APP_DIR}}
+  - chown -R {{ADMIN_USER}}:{{ADMIN_USER}} {{APP_DIR}}
+
+  # --- Marker so azure-deploy.sh knows cloud-init finished ---
+  - touch /var/lib/cloud/postiz-bootstrap-complete
+
+final_message: "Postiz VM bootstrap complete after $UPTIME seconds"

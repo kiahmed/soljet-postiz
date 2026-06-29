@@ -1,0 +1,37 @@
+# Arboryx.ai — social handles across platforms (EXAMPLE / committed template)
+# Source of truth: Postiz DB's Integration table (linked via Customer "Arboryx.ai").
+#
+# The real file is products/arboryx.ai/handles.yaml — gitignored, holds the
+# actual ids. Copy this to handles.yaml and fill the <...> placeholders with the
+# values from .env (same keys), or pull them from the Postiz DB.
+
+product: Arboryx.ai
+umbrella_business: SolutionJet
+postiz_customer_id: <POSTIZ_CUSTOMER_ID_ARBORYX>
+
+handles:
+  x:
+    handle: "@arboryx_ai"
+    internal_id: "<X_ACCOUNT_ID_ARBORYX>"
+    postiz_integration_id: <POSTIZ_INTEGRATION_ID_X_ARBORYX>
+    voice: product-facing; branches/catalysts/fruits language
+    status: connected
+
+  linkedin:
+    handle: ""        # TBD — waiting on LinkedIn dev app + Company Page
+    status: pending
+
+  reddit:
+    handle: ""        # TBD
+    status: pending
+
+branches:
+  - name: Robotics
+    description: physical AI and embodied robotics — first deeply-developed module under Arboryx.ai
+    publish_subdomain: robotics.arboryx.ai
+    postiz_customer_id: <POSTIZ_CUSTOMER_ID_ROBOTICS>
+    source_repo: ../catalyst-knowledge-graph/
+    canonical_db: ../catalyst-knowledge-graph/data/robotics.duckdb
+    tier_config: branches/robotics/tier.config
+    context: branches/robotics/context.md
+    dedicated_handles: []    # shares @arboryx_ai for now; future: Showcase Page on LinkedIn
