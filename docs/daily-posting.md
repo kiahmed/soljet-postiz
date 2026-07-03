@@ -131,8 +131,8 @@ make scheduler-down      # stop it
 ```
 
 - **Schedule:** edit `ops/scheduler/crontab` (default `0 6 * * *` = 06:00), then
-  `make scheduler-restart`. Times use `SCHEDULER_TZ` (default `America/New_York`,
-  i.e. 6am Eastern year-round); override in `.env` for another zone.
+  `make scheduler-restart`. Times use `SCHEDULER_TZ` (default `Etc/GMT+5` =
+  fixed EST/UTC-5, no DST); override in `.env` for another zone.
 - **What each run does:** `ops/scheduler/run-daily.sh` → `make heal` then
   `make post`, logged to `data/daily.log`.
 - **How it reaches the stack:** the container mounts the repo (`.:/app`), the
