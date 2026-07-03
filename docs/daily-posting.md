@@ -86,6 +86,25 @@ Then paste into the platform and attach.
 
 ---
 
+## Staged content — preview equals post
+
+The poster **generates once and reuses**. The first time it builds a post (a
+`make post-preview`, or the first `make post`), it stages the exact text + image
+to `data/content_cache/<tier>/<source_id>.json`. Every later run for that item
+**reuses** the staged file instead of re-composing — so what you preview is
+exactly what publishes, and the LLM never quietly rewrites it on the real run.
+
+- **Review / edit before it goes out:** open the JSON and edit `parts` (the post
+  text) or `media_paths`. The push publishes what's in the file, verbatim.
+- **Force a fresh compose:** `bin/daily.py --regenerate` (or delete the file).
+- **Images:** already cached separately in `data/imagery_cache/` (hashed, with an
+  exists-check), so they're never regenerated either. Note: robotics/parent posts
+  that carry a deep link attach **no** image on purpose — X/LinkedIn render the
+  destination's link card.
+
+Workflow: `make post-preview` → eyeball (or tweak the JSON) → `make post` posts
+the identical content.
+
 ## Troubleshooting
 
 **Posts stuck / nothing publishing.** Almost always the Temporal workers have
@@ -204,4 +223,5 @@ Everything runs through `make` (run `make` alone for the full list):
 
 `bin/daily.py` flags (what `make post*` wraps): `--push` publish · `--tier <id>`
 one tier · `--check` health only · `--since 30d` narrow the lookback (default is
-~all history; the posted-log prevents repeats, so a backlog drips one/day).
+~all history; the posted-log prevents repeats, so a backlog drips one/day) ·
+`--regenerate` re-compose even if staged content exists.
