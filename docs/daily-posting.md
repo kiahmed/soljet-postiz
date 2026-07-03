@@ -7,8 +7,10 @@ post needs posting by hand. Written so someone new can run this cold.
 
 ## What runs
 
-One script, on a timer: **`bin/daily.py --push`**. No Claude, no always-on
-process — just a cron / Windows Task Scheduler job firing once a day.
+One script, on a timer: **`bin/daily.py --push`** (via `make post`). No Claude,
+no always-on agent — just a cron job firing once a day. Recommended host is a
+small Docker container in this same stack (see [Scheduling it](#scheduling-it));
+Windows Task Scheduler / WSL cron also work.
 
 Each run, for every **enabled tier** (a product or an enabled branch):
 
@@ -84,18 +86,41 @@ Then paste into the platform and attach.
 
 ---
 
+## Staged content — preview equals post
+
+The poster **generates once and reuses**. The first time it builds a post (a
+`make post-preview`, or the first `make post`), it stages the exact text + image
+to `data/content_cache/<tier>/<source_id>.json`. Every later run for that item
+**reuses** the staged file instead of re-composing — so what you preview is
+exactly what publishes, and the LLM never quietly rewrites it on the real run.
+
+- **Review / edit before it goes out:** open the JSON and edit `parts` (the post
+  text) or `media_paths`. The push publishes what's in the file, verbatim.
+- **Force a fresh compose:** `bin/daily.py --regenerate` (or delete the file).
+- **Images:** already cached separately in `data/imagery_cache/` (hashed, with an
+  exists-check), so they're never regenerated either. Note: robotics/parent posts
+  that carry a deep link attach **no** image on purpose — X/LinkedIn render the
+  destination's link card.
+
+Workflow: `make post-preview` → eyeball (or tweak the JSON) → `make post` posts
+the identical content.
+
 ## Troubleshooting
 
 **Posts stuck / nothing publishing.** Almost always the Temporal workers have
 silently stopped polling (the app looks "up" but publishes nothing — this is
-what blocked LinkedIn historically). Fix:
+what blocked LinkedIn historically). One command diagnoses and fixes it:
 
 ```bash
-docker compose restart postiz      # workers re-register in ~1–3 min
-python3 bin/daily.py --check        # should now say: workers polling YES
+make heal          # checks Temporal + workers; restarts only what's broken
+make heal-check    # report only, no restart (exit 1 if unhealthy)
 ```
 
-`daily.py` detects this itself: a post stuck in `QUEUE` past the timeout is left
+`make heal` restarts temporal and/or postiz to re-register the workers and waits
+until they poll again. The docker scheduler runs it automatically before every
+daily run, so this is mostly a manual escape hatch.
+
+`daily.py` also detects this itself: a post stuck in `QUEUE` past the timeout is left
 **unposted** (so the next run retries it) and written to the manual queue with a
 "restart postiz" note. Definitive failures (like X out of credits) are *not*
 retried — retrying wouldn't help — they just go to the manual queue.
@@ -109,33 +134,94 @@ retried — retrying wouldn't help — they just go to the manual queue.
 
 ## Scheduling it
 
-Preview first (never publishes): `python3 bin/daily.py --since 3d`
-Go live: add `--push`.
+Preview first (never publishes): `make post-preview`. Go live: `make post`.
 
-**Windows Task Scheduler (recommended — survives reboots, runs headless):**
-Create a Basic Task, daily at your chosen time, action:
+### Option 1 — Docker scheduler (recommended)
+
+A small container (`postiz-scheduler`) runs the daily job on a cron **inside the
+same Docker stack** you already keep up for Postiz. It heals connectivity, then
+publishes — no host cron, no open terminal needed.
+
+```bash
+make scheduler-up        # build + start it (opt-in `scheduler` compose profile)
+make scheduler-logs      # watch it
+make scheduler-run       # fire one run right now (test)
+make scheduler-down      # stop it
+```
+
+- **Schedule:** edit `ops/scheduler/crontab` (default `0 6 * * *` = 06:00), then
+  `make scheduler-restart`. Times use `SCHEDULER_TZ` (default `Etc/GMT+5` =
+  fixed EST/UTC-5, no DST); override in `.env` for another zone.
+- **What each run does:** `ops/scheduler/run-daily.sh` → `make heal` then
+  `make post`, logged to `data/daily.log`.
+- **How it reaches the stack:** the container mounts the repo (`.:/app`), the
+  docker socket (to exec the other containers), your gcloud ADC read-only, and
+  the sibling `catalyst-knowledge-graph` repo (robotics branch's `cards.json`).
+  It needs no secrets of its own — it reads the same `.env`.
+- **Survives reboots** *if Docker itself auto-starts* — set Docker Desktop to
+  "Start on login." Then after a reboot the whole stack + scheduler come back
+  (`restart: unless-stopped`). If Docker isn't running, nothing runs.
+
+**Firestore credentials — required for the parent (arboryx) tier.** The parent
+tier reads findings from Firestore, which needs a **service-account** key for
+headless use. (A user ADC from `gcloud auth application-default login` does NOT
+work unattended — Google forces periodic reauth: `503 Reauthentication is
+needed`. Fine when you run `make post` yourself on the host, not in the container.)
+
+**If `GOOGLE_APPLICATION_CREDENTIALS` is already set in your shell** to an SA key
+with Firestore read (`roles/datastore.viewer`) — it is on this box — **nothing
+to configure.** The scheduler reads that variable and identity-mounts the key at
+the same path inside the container automatically. Verified: the parent tier
+composes from Firestore headless.
+
+If you ever need to set one up fresh: create an SA with `roles/datastore.viewer`
+in the `GCP_PROJECT` project, download its JSON key anywhere on the host, and
+`export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json` before
+`make scheduler-up`.
+
+### Option 2 — Windows Task Scheduler (host-side, no extra container)
+
+Survives reboots, runs headless. Basic Task, daily, action:
 
 ```
-wsl.exe -e bash -lc "cd /mnt/c/soljet_dev/ai_stack_development/soljet-postiz && python3 bin/daily.py --push >> data/daily.log 2>&1"
+wsl.exe -e bash -lc "cd /mnt/c/soljet_dev/ai_stack_development/soljet-postiz && make heal && make post >> data/daily.log 2>&1"
 ```
 
-**WSL cron (only fires while WSL is running):**
+### Option 3 — WSL cron (only fires while WSL is running)
 
 ```cron
-30 14 * * *  cd /mnt/c/soljet_dev/ai_stack_development/soljet-postiz && python3 bin/daily.py --push >> data/daily.log 2>&1
+30 14 * * *  cd /mnt/c/soljet_dev/ai_stack_development/soljet-postiz && make heal && make post >> data/daily.log 2>&1
 ```
 
-Both append to `data/daily.log`. The job exits non-zero only when something is
-stuck (needs a human), so that's the line to grep in the log.
+All three append to `data/daily.log`. The job exits non-zero only when something
+is stuck (needs a human), so that's the line to grep in the log.
 
 ---
 
-## Flags reference
+## Make targets
 
-| Command | What it does |
+Everything runs through `make` (run `make` alone for the full list):
+
+| Target | What it does |
 | --- | --- |
-| `bin/daily.py` | Preview all enabled tiers. **No publishing.** |
-| `bin/daily.py --push` | Publish. This is the scheduled command. |
-| `bin/daily.py --tier arboryx --push` | Just one tier. |
-| `bin/daily.py --check` | Health only: worker pollers + each tier's channels. |
-| `bin/daily.py --since 7d` | Widen the "new items" lookback window (default 3d). |
+| **Stack** | |
+| `make deploy` / `make update` | Start / update the whole Postiz stack |
+| `make status` / `make ps` | Health checks / container list |
+| `make down` | Stop containers (volumes preserved) |
+| `make clean` \| `clean-stopped` \| `clean-deep` | Reclaim docker disk |
+| **Connectivity** | |
+| `make heal` | Check Temporal + workers, restart only what's broken |
+| `make heal-check` | Report health only (no restart) |
+| **Posting** | |
+| `make check` | Worker pollers + each tier's channels |
+| `make post-preview` | Compose today's posts, **no publish** |
+| `make post` | Publish today's posts (the daily run) |
+| `make manual-queue` | Show posts awaiting a hand-post |
+| **Scheduler** | |
+| `make scheduler-up` \| `-down` \| `-restart` \| `-logs` | Manage the cron container |
+| `make scheduler-run` | Fire one daily run now (test) |
+
+`bin/daily.py` flags (what `make post*` wraps): `--push` publish · `--tier <id>`
+one tier · `--check` health only · `--since 30d` narrow the lookback (default is
+~all history; the posted-log prevents repeats, so a backlog drips one/day) ·
+`--regenerate` re-compose even if staged content exists.

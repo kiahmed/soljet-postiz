@@ -171,6 +171,34 @@ services:
     networks:
       - temporal-network
 
+  # Daily auto-poster. Opt-in: only starts with `--profile scheduler`
+  # (via `make scheduler-up`). Runs bin/daily.py on a cron; talks to the other
+  # containers through the docker socket, so daily.py / heal.sh run unchanged.
+  scheduler:
+    build:
+      context: .
+      dockerfile: ops/scheduler/Dockerfile
+    container_name: postiz-scheduler
+    profiles: ["scheduler"]
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      TZ: ${SCHEDULER_TZ:-Etc/GMT+5}
+      # Reuse the host's Firestore service-account env var as-is. The key file is
+      # identity-mounted below at the exact same path, so this path is valid
+      # inside the container too. Empty -> falls back to the mounted user ADC.
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    volumes:
+      - .:/app                                        # repo + .env + data/ (logs, posted-log)
+      - /var/run/docker.sock:/var/run/docker.sock     # so daily.py/heal.sh can exec siblings
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro # user ADC fallback for Firestore
+      # Identity-mount the SA key at its host path (works for any key location).
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:ro
+      - ../catalyst-knowledge-graph:/catalyst-knowledge-graph:ro  # robotics branch cards.json source
+    depends_on:
+      postiz:
+        condition: service_started
+
 volumes:
   postgres-volume:
     external: false

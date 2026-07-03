@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
+from src.lib import content_cache
 from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
 from src.lib.imagery import auto_media
 from src.lib.posted_log import mark_posted, posted_ids_for
@@ -140,7 +141,8 @@ def pick_newest_unposted(tier: Tier, since) -> str | None:
     try:
         src = build_source(ds, tier)
         for it in src.list_recent(since=since, limit=25):
-            sid = str(it.get("id") or it.get("catalyst_id") or it.get("_id") or "")
+            sid = str(it.get("id") or it.get("catalyst_id")
+                      or it.get("card_id") or it.get("_id") or "")
             if sid and sid not in posted:
                 it["_id"] = sid
                 it["_when"] = str(it.get("timestamp") or it.get("date")
@@ -175,7 +177,7 @@ def queue_manual(tier: Tier, label: str, parts: list[str], media: list[Path], re
 
 # ---------------------------------------------------------------- per-tier run
 
-def run_tier(tier_id: str, *, push: bool, since) -> dict:
+def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> dict:
     """Process one tier. Returns a small summary dict. Never raises."""
     result = {"tier": tier_id, "status": "skipped", "channels": []}
     try:
@@ -196,18 +198,33 @@ def run_tier(tier_id: str, *, push: bool, since) -> dict:
         result["status"] = "nothing-new"
         return result
 
-    try:
-        bundle = recipe_single(tier, source_id)
-    except Exception as e:  # noqa: BLE001
-        print(f"[{tier_id}] compose failed for {source_id}: {e}", file=sys.stderr)
-        result["status"] = "error"
-        return result
+    # Reuse staged content if we've already generated this post (preview or a
+    # prior run) — so the push publishes exactly what was previewed and never
+    # silently re-composes different text. --regenerate forces a fresh compose.
+    cached = None if regenerate else content_cache.load(tier.id, source_id)
+    if cached:
+        source_type = cached.get("source_type", "")
+        text = cached["text"]
+        parts = cached["parts"]
+        media_paths = [Path(p) for p in cached["media_paths"]]
+        staged = True
+    else:
+        try:
+            bundle = recipe_single(tier, source_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{tier_id}] compose failed for {source_id}: {e}", file=sys.stderr)
+            result["status"] = "error"
+            return result
+        source_type = bundle.source_type
+        text = bundle.text
+        parts = bundle.parts if bundle.parts else split_for_thread(bundle.text)
+        media_paths = auto_media(tier, bundle, "single")
+        content_cache.save(tier.id, source_id, source_type=source_type, text=text,
+                           parts=parts, media_paths=[str(m) for m in media_paths])
+        staged = False
 
-    parts = bundle.parts if bundle.parts else split_for_thread(bundle.text)
-    bundle.media_paths = auto_media(tier, bundle, "single")
-    media_paths = bundle.media_paths
-
-    print(f"[{tier_id}] {source_id} → {len(iids)} channel(s)")
+    print(f"[{tier_id}] {source_id} → {len(iids)} channel(s)"
+          f"{'  [reusing staged content]' if staged else ''}")
     print("  " + "\n  ".join(parts[0].splitlines()))
     print(f"  [media] {media_paths[0] if media_paths else 'none'}")
 
@@ -266,8 +283,8 @@ def run_tier(tier_id: str, *, push: bool, since) -> dict:
     # a definitive ERROR won't improve on retry, but a dead-worker QUEUE will,
     # so leave stuck-only items unposted so the next run picks them up again.
     if any_published or not any_stuck:
-        mark_posted(source_type=bundle.source_type, source_id=bundle.source_id,
-                    tier=tier.id, mode="now", text=bundle.text,
+        mark_posted(source_type=source_type, source_id=source_id,
+                    tier=tier.id, mode="now", text=text,
                     integration_ids=iids,
                     postiz_post_id=",".join(c.get("url", "") for c in result["channels"]),
                     response={"channels": result["channels"]})
@@ -283,7 +300,11 @@ def main() -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tier", help="run just one tier id (default: all enabled)")
     p.add_argument("--push", action="store_true", help="actually publish (default: preview)")
-    p.add_argument("--since", default="3d", help="how far back to look for new items")
+    p.add_argument("--since", default="3650d",
+                   help="how far back to look for items (default ~all; the "
+                        "posted-log prevents repeats, so backlogs drip one/day)")
+    p.add_argument("--regenerate", action="store_true",
+                   help="re-compose text/imagery even if staged content exists")
     p.add_argument("--check", action="store_true",
                    help="health check only (worker pollers + channels), no posting")
     args = p.parse_args()
@@ -309,7 +330,8 @@ def main() -> int:
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
     tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
-    summaries = [run_tier(t, push=args.push, since=since) for t in tiers]
+    summaries = [run_tier(t, push=args.push, since=since, regenerate=args.regenerate)
+                 for t in tiers]
 
     print("\n==== summary ====")
     for s in summaries:
