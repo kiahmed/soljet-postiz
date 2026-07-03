@@ -553,3 +553,29 @@ First-ever repo checkin. Scanned the whole tree before `git add`:
 - No rotation needed — repo was never pushed; sanitized before first commit.
 - **Live Postiz ids moved to `.env`** (round 2): the org API key + all routing ids (customer/integration/X-account/org/tunnel UUID) were redacted from this file and from `products/**/tier.config` + `handles.yaml`, then placeholdered. `tier.config` now references them as `${POSTIZ_CUSTOMER_ID_ARBORYX}` etc.; `config_loader._parse_config` expands `${VAR}` from `.env` (unknown → `''`, so a missing id drops the channel/customer rather than leaking a token). New `.env` keys: `POSTIZ_CUSTOMER_ID_ARBORYX/_ROBOTICS`, `POSTIZ_INTEGRATION_ID_X_ARBORYX/_LINKEDIN`, `X_ACCOUNT_ID_ARBORYX` (placeholders mirrored into `.env.example`).
 - **`handles.yaml` is now gitignored**; committed template is `handles.example.yaml`. (No code reads `handles.yaml` — pure reference.) Real id values are also dumped in `notes.txt` (gitignored) for hand reference.
+
+---
+
+## LinkedIn live + daily auto-poster (2026-07-03)
+
+- **First live LinkedIn post shipped** to the `arboryx-ai` page (the `launch`
+  narrative — banner + "Introducing Arboryx.ai"). Integration validated:
+  provider `linkedin-page`, org-page scope granted, token valid (expires
+  2026-07-18, has refresh token), `LINKEDIN_ENABLED=true`.
+- **Root cause of the historical "LinkedIn never posts"**: NOT permissions —
+  the Temporal worker pollers had silently died (orchestrator "online" but
+  polling no queues), so every queued post sat in `QUEUE` forever.
+  `docker compose restart postiz` re-registered workers → post published in
+  seconds. See `reference_postiz_api` memory for the full debug ladder.
+- **New: `bin/daily.py`** — daily auto-poster. Once/day (cron / Task Scheduler),
+  per enabled tier: newest unposted primary-source item → compose → publish to
+  **each channel separately** → poll `Post.state` until `PUBLISHED`/`ERROR`
+  (never fire-and-forget). Failed/stuck channels (e.g. X credits) are caught,
+  never crash the run, and appended to `data/manual-post-queue.md` (text +
+  image path) for hand-posting; also visible errored in the Postiz UI. Stuck-in-
+  QUEUE items (dead workers) are left unposted for the next run; definitive
+  ERRORs are marked done. `--check` verifies worker pollers + channels;
+  preview by default, `--push` to publish.
+- **Operator manual: `docs/daily-posting.md`** — the how-to for running this
+  cold (daily routine, where to find manual-post text/image, troubleshooting,
+  scheduling).
