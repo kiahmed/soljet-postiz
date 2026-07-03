@@ -4,4 +4,4 @@
 #   make scheduler-restart
 #
 # min hour dom mon dow   command
-30 14 * * *   /app/ops/scheduler/run-daily.sh >> /app/data/daily.log 2>&1
+0 6 * * *   /app/ops/scheduler/run-daily.sh >> /app/data/daily.log 2>&1
