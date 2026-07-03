@@ -143,26 +143,21 @@ make scheduler-down      # stop it
   (`restart: unless-stopped`). If Docker isn't running, nothing runs.
 
 **Firestore credentials — required for the parent (arboryx) tier.** The parent
-tier reads findings from Firestore. A headless container **cannot** use the
-interactive user ADC (`gcloud auth application-default login`): Google forces
-periodic *reauthentication*, which surfaces as
-`503 ... Reauthentication is needed` and the post silently fails to compose.
-It works when you run `make post` yourself on the host (gcloud's token cache
-covers it), but **not unattended**.
+tier reads findings from Firestore, which needs a **service-account** key for
+headless use. (A user ADC from `gcloud auth application-default login` does NOT
+work unattended — Google forces periodic reauth: `503 Reauthentication is
+needed`. Fine when you run `make post` yourself on the host, not in the container.)
 
-For the scheduler, use a **service-account key** (never needs reauth):
+**If `GOOGLE_APPLICATION_CREDENTIALS` is already set in your shell** to an SA key
+with Firestore read (`roles/datastore.viewer`) — it is on this box — **nothing
+to configure.** The scheduler reads that variable and identity-mounts the key at
+the same path inside the container automatically. Verified: the parent tier
+composes from Firestore headless.
 
-1. In the GCP project (`GCP_PROJECT` in `.env`), create a service account with
-   **`roles/datastore.viewer`** (Firestore read).
-2. Download its JSON key to `auth/firestore-sa.json` (the `auth/` dir is
-   gitignored; the repo is mounted at `/app`, so the container sees it).
-3. Add to `.env`: `GOOGLE_APPLICATION_CREDENTIALS=auth/firestore-sa.json`
-   (relative — resolves from the run dir on both host and container).
-4. `make scheduler-restart`.
-
-Interim without a service account: re-run `gcloud auth application-default
-login` on the host — refreshes the user ADC for a while, but it will hit reauth
-again, so it's not durable for unattended runs.
+If you ever need to set one up fresh: create an SA with `roles/datastore.viewer`
+in the `GCP_PROJECT` project, download its JSON key anywhere on the host, and
+`export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json` before
+`make scheduler-up`.
 
 ### Option 2 — Windows Task Scheduler (host-side, no extra container)
 
