@@ -16,6 +16,7 @@ notes.txt
 data/posted_log.sqlite
 data/posted_log.sqlite-journal
 data/imagery_cache/
+data/manual-post-queue.md
 
 # Python
 __pycache__/
