@@ -60,7 +60,8 @@ def main() -> int:
             continue
         for it in items:
             it["_source"] = ds.type
-            it["_id"] = str(it.get("id") or it.get("catalyst_id") or it.get("_id") or "")
+            it["_id"] = str(it.get("id") or it.get("catalyst_id")
+                            or it.get("card_id") or it.get("_id") or "")
         all_items.extend(items)
 
     if args.unposted:

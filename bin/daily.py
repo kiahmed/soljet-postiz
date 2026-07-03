@@ -140,7 +140,8 @@ def pick_newest_unposted(tier: Tier, since) -> str | None:
     try:
         src = build_source(ds, tier)
         for it in src.list_recent(since=since, limit=25):
-            sid = str(it.get("id") or it.get("catalyst_id") or it.get("_id") or "")
+            sid = str(it.get("id") or it.get("catalyst_id")
+                      or it.get("card_id") or it.get("_id") or "")
             if sid and sid not in posted:
                 it["_id"] = sid
                 it["_when"] = str(it.get("timestamp") or it.get("date")
@@ -283,7 +284,9 @@ def main() -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tier", help="run just one tier id (default: all enabled)")
     p.add_argument("--push", action="store_true", help="actually publish (default: preview)")
-    p.add_argument("--since", default="3d", help="how far back to look for new items")
+    p.add_argument("--since", default="3650d",
+                   help="how far back to look for items (default ~all; the "
+                        "posted-log prevents repeats, so backlogs drip one/day)")
     p.add_argument("--check", action="store_true",
                    help="health check only (worker pollers + channels), no posting")
     args = p.parse_args()
