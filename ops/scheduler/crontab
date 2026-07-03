@@ -1,0 +1,7 @@
+# Postiz daily-poster schedule (supercronic / standard 5-field cron).
+# Times are in the container's TZ — set SCHEDULER_TZ in .env (default UTC).
+# Edit the line below to change when the daily run fires, then:
+#   make scheduler-restart
+#
+# min hour dom mon dow   command
+30 14 * * *   /app/ops/scheduler/run-daily.sh >> /app/data/daily.log 2>&1

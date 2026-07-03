@@ -2,7 +2,8 @@
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
-        ps restart heal heal-check check post post-preview manual-queue
+        ps restart heal heal-check check post post-preview manual-queue \
+        scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
@@ -54,6 +55,22 @@ post:           ## Publish today's posts for all enabled tiers (the daily run)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
+
+# ---- docker scheduler (opt-in `scheduler` compose profile) ---------------
+scheduler-up:       ## Build & start the daily scheduler container
+	docker compose --profile scheduler up -d --build scheduler
+
+scheduler-down:     ## Stop & remove the scheduler container
+	docker compose --profile scheduler rm -sf scheduler
+
+scheduler-restart:  ## Restart the scheduler (after editing its crontab)
+	docker compose --profile scheduler restart scheduler
+
+scheduler-logs:     ## Follow the scheduler container log
+	docker compose --profile scheduler logs -f scheduler
+
+scheduler-run:      ## Fire one daily run NOW inside the scheduler (test/manual)
+	docker compose --profile scheduler exec scheduler /app/ops/scheduler/run-daily.sh
 
 # ---- help ----------------------------------------------------------------
 help:           ## Show this list
