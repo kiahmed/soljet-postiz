@@ -72,19 +72,25 @@ def deep_link_for(tier: Tier, source_type: str, source_data: dict) -> str | None
     return None
 
 
-def let_x_render_link_card(tier: Tier) -> bool:
+def let_platform_render_link_card(tier: Tier) -> bool:
     """Whether the imagery ladder should SKIP attaching its image when a deep
-    link is present, so X auto-renders the destination's link card instead.
+    link is present, so the PLATFORM (X and LinkedIn both) auto-renders the
+    destination's link card from its og:image instead. Applies to every channel
+    the post fans out to — imagery is decided once per post, not per platform.
 
-    Default: true. Override per-tier via `LET_X_RENDER_LINK_CARD=false` to
-    keep attaching our generated image (e.g., when destination doesn't yet
-    expose a per-entry og:image). Branch tier inherits parent's value when
-    not set explicitly.
+    Default: true. Override per-tier via `LET_PLATFORM_RENDER_LINK_CARD=false`
+    to keep attaching our generated image (e.g., when the destination doesn't
+    yet expose a per-entry og:image). Branch tier inherits parent's value when
+    not set explicitly. The legacy key `LET_X_RENDER_LINK_CARD` is still read
+    as a fallback.
     """
-    val = tier.raw.get("LET_X_RENDER_LINK_CARD")
+    def _read(t: Tier):
+        return (t.raw.get("LET_PLATFORM_RENDER_LINK_CARD")
+                or t.raw.get("LET_X_RENDER_LINK_CARD"))
+    val = _read(tier)
     if val is None and tier.parent_id:
         from .config_loader import load_tier
-        val = load_tier(tier.parent_id).raw.get("LET_X_RENDER_LINK_CARD")
+        val = _read(load_tier(tier.parent_id))
     if val is None:
         return True
     return val.lower() == "true"
