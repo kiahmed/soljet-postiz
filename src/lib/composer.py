@@ -67,7 +67,6 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
     direct = parts.get("direct", "")
     indirect = parts.get("indirect", "")
     play = finding.get("guidance_play") or ""
-    src = finding.get("source_url") or ""
     sector = finding.get("category") or ""
 
     lines = [head]
@@ -77,8 +76,6 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
         lines.append(f"  ↳ {indirect}")
     if play:
         lines.append(f"\nPlay: {play}")
-    if src:
-        lines.append(f"\n{src}")
     if sector:
         lines.append(f"\n#{sector.replace(' ', '').replace('&', '')}")
     draft = "".join(lines)
@@ -91,7 +88,6 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
     """Branch-tier composition from a KG catalyst row + its related rows."""
     title = catalyst.get("title") or catalyst.get("name") or catalyst.get("finding") or "<catalyst>"
     summary = catalyst.get("summary") or catalyst.get("description") or ""
-    src = catalyst.get("source_url") or catalyst.get("url") or ""
 
     rel_names = []
     for r in related[:3]:
@@ -104,8 +100,6 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
         lines.append(f"\n{summary}")
     if rel_names:
         lines.append(f"\nLinked: {', '.join(rel_names)}")
-    if src:
-        lines.append(f"\n{src}")
     draft = "".join(lines)
 
     rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=max_chars)
