@@ -3,7 +3,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue \
-        scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run
+        scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
+        worktree-clean _notmain commit push pr ship
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
@@ -74,6 +75,42 @@ scheduler-logs:     ## Follow the scheduler container log
 
 scheduler-run:      ## Fire one daily run NOW inside the scheduler (test/manual)
 	docker compose --profile scheduler exec scheduler /app/ops/scheduler/run-daily.sh
+
+# ---- worktree cleanup ----------------------------------------------------
+worktree-clean:     ## Remove a MERGED worktree everywhere (usage: make worktree-clean <name> [FORCE=1])
+	@./bin/worktree-clean.sh "$(filter-out $@,$(MAKECMDGOALS))" "FORCE=$(FORCE)"
+
+# Let the worktree name be positional (`make worktree-clean <name>`): turn the
+# trailing name into a no-op goal so make doesn't error on it. Scoped to
+# worktree-clean runs only, so it never masks typos in other targets.
+ifeq (worktree-clean,$(firstword $(MAKECMDGOALS)))
+$(if $(filter-out worktree-clean,$(MAKECMDGOALS)),\
+     $(eval $(filter-out worktree-clean,$(MAKECMDGOALS)):;@:))
+endif
+
+# ---- git workflow (run inside a worktree branch) -------------------------
+# Guard: never commit/push/PR straight onto main.
+_notmain:
+	@test "$$(git rev-parse --abbrev-ref HEAD)" != main \
+	  || { echo "refusing: you're on main — switch to a worktree branch"; exit 1; }
+
+commit push pr ship: _notmain
+
+commit:     ## Stage all + commit (usage: make commit m="message")
+	@test -n "$(m)" || { echo 'usage: make commit m="your message"'; exit 2; }
+	git add -A && git commit -m "$(m)"
+
+push:       ## Push the current branch to origin (sets upstream)
+	git push -u origin $$(git rev-parse --abbrev-ref HEAD)
+
+pr:         ## Open a PR from the current branch (title/body auto-filled from commits)
+	gh pr create --fill --base main --head $$(git rev-parse --abbrev-ref HEAD)
+
+ship:       ## commit + push + open PR in one (usage: make ship m="message")
+	@test -n "$(m)" || { echo 'usage: make ship m="your message"'; exit 2; }
+	git add -A && git commit -m "$(m)"
+	git push -u origin $$(git rev-parse --abbrev-ref HEAD)
+	gh pr create --fill --base main --head $$(git rev-parse --abbrev-ref HEAD)
 
 # ---- help ----------------------------------------------------------------
 help:           ## Show this list
