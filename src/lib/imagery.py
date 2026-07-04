@@ -45,7 +45,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .card_to_graph import card_to_graph_spec
 from .config_loader import Tier
-from .funnel import let_x_render_link_card
+from .funnel import let_platform_render_link_card
 from .imagery_graph import GraphSpec, extract_graph, render_graph
 from .llm import chat as llm_chat, generate_image as llm_generate_image
 from .recipes import PostBundle
@@ -83,10 +83,10 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str) -> list[Path]:
     ctx = bundle.context or {}
 
     # 2. Deep-link funnel — when a deep link was injected into the post text
-    #    and the tier opts in to LET_X_RENDER_LINK_CARD (default true), skip
-    #    our image entirely so X auto-renders the destination's og:image as
-    #    a clickable link card.
-    if ctx.get("deep_link") and let_x_render_link_card(tier):
+    #    and the tier opts in to LET_PLATFORM_RENDER_LINK_CARD (default true),
+    #    skip our image entirely so the platform (X/LinkedIn) auto-renders the
+    #    destination's og:image as a clickable link card.
+    if ctx.get("deep_link") and let_platform_render_link_card(tier):
         return []
 
     # Optional LLM router — reorders strategies, doesn't bypass user media
