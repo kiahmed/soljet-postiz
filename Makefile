@@ -2,7 +2,7 @@
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
-        ps restart heal heal-check check post post-preview manual-queue \
+        ps restart heal heal-check check post post-preview regenerate manual-queue \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
@@ -49,6 +49,9 @@ check:          ## Daily poster's view: worker pollers + each tier's channels
 
 post-preview:   ## Compose today's posts for all enabled tiers, DO NOT publish
 	python3 bin/daily.py
+
+regenerate:     ## Re-compose + re-stage today's posts (discard staged content), no publish
+	python3 bin/daily.py --regenerate
 
 post:           ## Publish today's posts for all enabled tiers (the daily run)
 	python3 bin/daily.py --push
