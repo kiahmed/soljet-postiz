@@ -52,6 +52,7 @@ TEMPORAL_CONTAINER = os.getenv("POSTIZ_TEMPORAL_CONTAINER", "temporal-admin-tool
 MANUAL_QUEUE = REPO_ROOT / "data" / "manual-post-queue.md"
 POLL_TIMEOUT = int(os.getenv("DAILY_POLL_TIMEOUT", "120"))  # seconds per channel
 POLL_INTERVAL = 8
+BACKLOG_LIMIT = int(os.getenv("DAILY_BACKLOG_LIMIT", "5000"))  # items the picker scans
 
 
 # ---------------------------------------------------------------- infra probes
@@ -140,7 +141,10 @@ def pick_newest_unposted(tier: Tier, since) -> str | None:
     ds = tier.sources[0]
     try:
         src = build_source(ds, tier)
-        for it in src.list_recent(since=since, limit=25):
+        # High cap so the WHOLE backlog is reachable — the picker takes the
+        # newest unposted, so a low cap (was 25) would strand older items once
+        # the newest N are all posted (e.g. 200 robotics cards).
+        for it in src.list_recent(since=since, limit=BACKLOG_LIMIT):
             sid = str(it.get("id") or it.get("catalyst_id")
                       or it.get("card_id") or it.get("_id") or "")
             if sid and sid not in posted:
