@@ -4,6 +4,7 @@ from __future__ import annotations
 from .base import Source
 from .cards_source import CardsJSON
 from .duckdb_source import DuckDBKG
+from .firestore_cards_source import FirestoreCards
 from .firestore_source import FirestoreFindings
 
 
@@ -28,6 +29,11 @@ def build_source(ds, tier) -> Source:
         return DuckDBKG(path=ds.params["path"], base_dir=tier.dir)
     if ds.type == "cards_json":
         return CardsJSON(path=ds.params["path"], base_dir=tier.dir)
+    if ds.type == "firestore_cards":
+        return FirestoreCards(
+            gcp_project=ds.params["gcp_project"],
+            collection=ds.params["collection"],
+        )
     raise ValueError(f"Unknown source type: {ds.type}")
 
 

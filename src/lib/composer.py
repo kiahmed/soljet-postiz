@@ -9,6 +9,7 @@ Flow:
 from __future__ import annotations
 
 import os
+import re
 
 from .config_loader import Tier, context_chain
 from .llm import chat as llm_chat
@@ -36,6 +37,73 @@ def _llm_rewrite(system_text: str, draft: str, *, max_chars: int = 280) -> str |
         f"DRAFT:\n{draft}"
     )
     return llm_chat(system_text, user_prompt, max_tokens=512)
+
+
+# ---------- hashtags ----------
+# We add 2-3 relevant hashtags deterministically (never via the LLM, which
+# hallucinates tags) to attract the right audience and rank in social search.
+# Named entities (companies) are the most specific/valuable tags; the per-sector
+# list below reliably tops us up to 2-3 when an item has few taggable entities.
+HASHTAG_TARGET = 3
+_HASHTAG_RESERVE = 32  # chars kept back from the LLM budget so tags fit
+
+SECTOR_HASHTAGS = {
+    "robotics": ["#Robotics", "#Automation", "#Humanoids"],
+    "crypto": ["#Crypto", "#Web3", "#Blockchain"],
+    "ai stack": ["#AI", "#AIInfra", "#MachineLearning"],
+    "space & defense": ["#Space", "#Defense", "#Aerospace"],
+    "power & energy": ["#Energy", "#CleanEnergy", "#Power"],
+    "strategic minerals": ["#CriticalMinerals", "#Mining", "#SupplyChain"],
+}
+_COMPANY_TYPES = {"public_company", "private_company", "company"}
+
+
+def _camel_tag(name: str) -> str:
+    """'Figure AI' -> '#FigureAI'; drops non-alphanumerics."""
+    words = re.findall(r"[A-Za-z0-9]+", name or "")
+    return "#" + "".join(w[:1].upper() + w[1:] for w in words) if words else ""
+
+
+def _relevant_hashtags(sector: str, entities: list[dict] | None, n: int = HASHTAG_TARGET) -> list[str]:
+    """Up to n tags: named company entities first (most specific), then the
+    sector's curated tags. Deduped case-insensitively, order preserved."""
+    tags: list[str] = []
+    for e in (entities or []):
+        if e.get("type") in _COMPANY_TYPES and e.get("name"):
+            t = _camel_tag(e["name"])
+            if t:
+                tags.append(t)
+        if len(tags) >= 2:  # cap entity tags so a sector tag still fits
+            break
+    sec = (sector or "").strip().lower()
+    tags += SECTOR_HASHTAGS.get(sec) or ([f"#{re.sub(r'[^A-Za-z0-9]', '', sector)}"] if sector else [])
+    seen, out = set(), []
+    for t in tags:
+        k = t.lower()
+        if t and t != "#" and k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out[:n]
+
+
+def _append_hashtags(text: str, tags: list[str], max_chars: int) -> str:
+    """Append each tag not already present, as long as it fits within max_chars."""
+    out = text.rstrip()
+    low = out.lower()
+    for t in tags:
+        if t.lower() in low:
+            continue
+        candidate = f"{out} {t}"
+        if len(candidate) > max_chars:
+            continue
+        out, low = candidate, candidate.lower()
+    return out
+
+
+def _sector_for(tier: Tier, item: dict) -> str:
+    """Sector name for tagging: explicit on the item, else the branch's own name."""
+    return (item.get("sector") or item.get("category")
+            or (tier.id.split(".")[-1] if tier.parent_id else "")) or ""
 
 
 def _parse_sentiment_takeaways(s: str) -> dict:
@@ -67,7 +135,6 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
     direct = parts.get("direct", "")
     indirect = parts.get("indirect", "")
     play = finding.get("guidance_play") or ""
-    sector = finding.get("category") or ""
 
     lines = [head]
     if direct:
@@ -76,12 +143,12 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
         lines.append(f"  ↳ {indirect}")
     if play:
         lines.append(f"\nPlay: {play}")
-    if sector:
-        lines.append(f"\n#{sector.replace(' ', '').replace('&', '')}")
     draft = "".join(lines)
 
-    rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=max_chars)
-    return rewritten or draft[:max_chars]
+    body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
+    rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
+    tags = _relevant_hashtags(_sector_for(tier, finding), finding.get("entities"))
+    return _append_hashtags(rewritten, tags, max_chars)
 
 
 def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_chars: int = 280) -> str:
@@ -102,5 +169,7 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
         lines.append(f"\nLinked: {', '.join(rel_names)}")
     draft = "".join(lines)
 
-    rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=max_chars)
-    return rewritten or draft[:max_chars]
+    body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
+    rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
+    tags = _relevant_hashtags(_sector_for(tier, catalyst), catalyst.get("entities"))
+    return _append_hashtags(rewritten, tags, max_chars)
