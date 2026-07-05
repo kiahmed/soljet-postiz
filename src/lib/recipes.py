@@ -88,7 +88,7 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
                 context=ctx,
             )
 
-        if ds.type == "cards_json":
+        if ds.type in ("cards_json", "firestore_cards"):
             related = src.get_related(source_id)
             link = deep_link_for(tier, "cards_json", item) or ""
             budget = _budget_for_link(link)
@@ -106,7 +106,7 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
             text = append_link_to_text(text, link)
             return PostBundle(
                 text=text,
-                source_type="cards_json",
+                source_type=ds.type,   # "cards_json" or "firestore_cards"
                 source_id=source_id,
                 context=ctx,
             )
