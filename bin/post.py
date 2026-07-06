@@ -29,6 +29,7 @@ from pathlib import Path
 from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
 from src.lib.config_loader import load_tier
 from src.lib.posted_log import is_posted, mark_posted
+from src.lib.channel_dispatch import channel_label, channel_media, channel_parts
 from src.lib.postiz_client import PostizClient
 from src.lib.recipes import (
     PostBundle,
@@ -133,6 +134,7 @@ def main() -> int:
                    help="copy the post text (or full thread) to the system clipboard")
     p.add_argument("--show", action="store_true",
                    help="open the generated image in the system viewer")
+    p.add_argument("--channel", help="publish to ONE channel only (e.g. linkedin, x)")
     args = p.parse_args()
 
     load_dotenv()
@@ -209,6 +211,11 @@ def main() -> int:
         return 0
 
     iids = integration_ids_for(tier)
+    if args.channel:  # restrict to one channel (e.g. --channel linkedin)
+        iids = [i for i in iids if channel_label(tier, i).lower() == args.channel.lower()]
+        if not iids:
+            print(f"no channel matching '{args.channel}'", file=sys.stderr)
+            return 1
     if not iids:
         print("no integration IDs to push to (channels empty or all gated off)", file=sys.stderr)
         return 1
@@ -224,13 +231,38 @@ def main() -> int:
             media.append({"id": up["id"], "path": up["path"]})
 
     publish_date = _resolve_publish_date(args)
-    res = client.create_post(
-        parts=parts,
-        integration_ids=iids,
-        mode=args.mode,
-        publish_date=publish_date,
-        media=media or None,
-    )
+
+    if tier.imagery_policy:
+        # Per-channel imagery: split into one create_post per integration so the
+        # image[] list can differ (X link_card / LinkedIn attach). Content is
+        # identical across channels; only media differs.
+        res_all = []
+        attach_cache = None
+        entities_cache = None
+        for iid in iids:
+            label = channel_label(tier, iid)
+            ch_media, attach_cache = channel_media(
+                client, tier, label, source_type=bundle.source_type,
+                source_id=bundle.source_id, parts=parts, text=bundle.text,
+                base_media=media, attach_cache=attach_cache)
+            ch_parts, entities_cache = channel_parts(
+                tier, label, source_type=bundle.source_type,
+                source_id=bundle.source_id, parts=parts, entities_cache=entities_cache)
+            print(f"  [{label}] imagery: {tier.imagery_policy.get(label.lower(),'legacy')} "
+                  f"→ {len(ch_media)} media")
+            r = client.create_post(parts=ch_parts, integration_ids=[iid], mode=args.mode,
+                                   publish_date=publish_date, media=ch_media or None)
+            if isinstance(r, list):
+                res_all.extend(r)
+        res = res_all
+    else:
+        res = client.create_post(
+            parts=parts,
+            integration_ids=iids,
+            mode=args.mode,
+            publish_date=publish_date,
+            media=media or None,
+        )
 
     postiz_post_id = ""
     if isinstance(res, list) and res:

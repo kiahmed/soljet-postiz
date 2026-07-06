@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,11 +37,13 @@ from pathlib import Path
 
 from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
 from src.lib import content_cache
+from src.lib.channel_dispatch import (
+    channel_label, channel_media, channel_parts, deep_link_from_text)
 from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
 from src.lib.imagery import auto_media
 from src.lib.posted_log import mark_posted, posted_ids_for
 from src.lib.postiz_client import PostizClient
-from src.lib.recipes import recipe_single
+from src.lib.recipes import PostBundle, recipe_single
 from src.lib.thread import split_for_thread
 
 # Postgres/Temporal live in docker on the same host as this script.
@@ -109,30 +112,17 @@ def poll_publish(post_id: str) -> tuple[str, str, str]:
 
 # ---------------------------------------------------------------- helpers
 
-def channel_label(tier: Tier, iid: str) -> str:
-    # Branch tiers inherit channels from the parent, so their own raw may not
-    # carry the CHANNEL_* keys — walk up the parent chain to resolve the name.
-    t: Tier | None = tier
-    while t is not None:
-        raw = t.raw
-        if iid == raw.get("CHANNEL_X_PRIMARY"):
-            return "X"
-        if iid == raw.get("CHANNEL_LINKEDIN"):
-            return "LinkedIn"
-        for k, v in raw.items():
-            if k.startswith("CHANNEL_") and v == iid:
-                return k.replace("CHANNEL_", "").replace("_", " ").title()
-        t = load_tier(t.parent_id) if t.parent_id else None
-    return f"channel:{iid[:8]}"
-
-
-def pick_newest_unposted(tier: Tier, since) -> str | None:
-    """Newest unposted item from the tier's PRIMARY (first) data source.
+def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
+    """Newest (default) or oldest unposted item from the tier's PRIMARY source.
 
     Each tier's DATA_SOURCE_1 is its intended daily feed (arboryx→firestore
-    findings, arboryx.robotics→cards_json robotics cards). We deliberately do
-    NOT mix in inherited/secondary sources: their ids belong to a different
-    resolver and a cross-source id would misfire in recipe_single()."""
+    findings, arboryx.robotics→firestore_cards). We deliberately do NOT mix in
+    inherited/secondary sources: their ids belong to a different resolver and a
+    cross-source id would misfire in recipe_single().
+
+    oldest=True walks the backlog forward from the earliest unposted entry —
+    used while per-card images are still being generated oldest-first, so the
+    posts stay in step with what already has an image."""
     from _common import build_source  # local import keeps module load cheap
     if not tier.sources:
         return None
@@ -157,7 +147,7 @@ def pick_newest_unposted(tier: Tier, since) -> str | None:
         return None
     if not items:
         return None
-    items.sort(key=lambda it: it["_when"], reverse=True)
+    items.sort(key=lambda it: it["_when"], reverse=not oldest)
     return items[0]["_id"]
 
 
@@ -179,9 +169,14 @@ def queue_manual(tier: Tier, label: str, parts: list[str], media: list[Path], re
     print(f"    [manual] appended to {MANUAL_QUEUE.relative_to(REPO_ROOT)}")
 
 
+# Per-channel imagery helpers live in src/lib/channel_dispatch (shared with
+# bin/post.py): deep_link_from_text, attach_media, channel_media.
+
+
 # ---------------------------------------------------------------- per-tier run
 
-def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> dict:
+def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
+             oldest: bool = False, channel: str | None = None) -> dict:
     """Process one tier. Returns a small summary dict. Never raises."""
     result = {"tier": tier_id, "status": "skipped", "channels": []}
     try:
@@ -192,11 +187,17 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> di
         return result
 
     iids = integration_ids_for(tier)
+    if channel:  # restrict to one channel (e.g. --channel linkedin)
+        iids = [i for i in iids if channel_label(tier, i).lower() == channel.lower()]
+        if not iids:
+            print(f"[{tier_id}] no channel matching '{channel}' — skip")
+            result["status"] = "nothing-new"
+            return result
     if not iids:
         print(f"[{tier_id}] disabled (no channels) — skip")
         return result
 
-    source_id = pick_newest_unposted(tier, since)
+    source_id = pick_unposted(tier, since, oldest=oldest)
     if not source_id:
         print(f"[{tier_id}] nothing new since window — skip")
         result["status"] = "nothing-new"
@@ -234,8 +235,11 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> di
 
     if not push:
         result["status"] = "preview"
-        result["channels"] = [{"channel": channel_label(tier, i), "state": "preview"}
-                              for i in iids]
+        for i in iids:
+            lbl = channel_label(tier, i)
+            pol = tier.imagery_policy.get(lbl.lower(), "legacy")
+            print(f"  [{lbl}] imagery: {pol}")
+            result["channels"].append({"channel": lbl, "state": "preview", "imagery": pol})
         return result
 
     # Upload media once; reuse the ids across channels.
@@ -253,15 +257,31 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> di
             print(f"    [warn] upload failed ({m}): {e}", file=sys.stderr)
 
     any_published = any_stuck = False
+    attach_cache = None  # memoized attach media, reused across 'attach' channels
+    entities_cache = None  # memoized entity list for per-channel @handles
     for iid in iids:
         label = channel_label(tier, iid)
+        # Per-channel imagery policy (design-per-channel-imagery.md). Absent →
+        # legacy: use whatever the single-decision ladder already produced.
+        ch_media, attach_cache = channel_media(
+            client, tier, label, source_type=source_type, source_id=source_id,
+            parts=parts, text=text, base_media=media, attach_cache=attach_cache)
+        # Per-channel @handles (Figure → @figure on LinkedIn, @Figure_robots on X).
+        ch_parts, entities_cache = channel_parts(
+            tier, label, source_type=source_type, source_id=source_id,
+            parts=parts, entities_cache=entities_cache)
+        policy = tier.imagery_policy.get(label.lower(), "legacy")
+        if policy == "attach" and not ch_media:
+            print(f"    [{label}] no attach image — degrading to link_card")
+        print(f"    [{label}] imagery: {policy} → {len(ch_media)} media")
+        pol_note = f" [imagery: {policy}]"
         try:
-            res = client.create_post(parts=parts, integration_ids=[iid],
-                                     mode="now", media=media or None)
+            res = client.create_post(parts=ch_parts, integration_ids=[iid],
+                                     mode="now", media=ch_media or None)
             post_id = res[0]["postId"] if isinstance(res, list) and res else ""
         except Exception as e:  # noqa: BLE001 — isolate one channel's failure
             print(f"    [{label}] push failed: {e}")
-            queue_manual(tier, label, parts, media_paths, f"Postiz rejected the post: {e}")
+            queue_manual(tier, label, ch_parts, media_paths, f"Postiz rejected the post: {e}{pol_note}")
             result["channels"].append({"channel": label, "state": "REJECTED"})
             continue
 
@@ -271,16 +291,16 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False) -> di
             print(f"    [{label}] PUBLISHED → {url}")
         elif state == "ERROR":
             print(f"    [{label}] ERROR: {err or 'unknown'}")
-            queue_manual(tier, label, parts, media_paths,
+            queue_manual(tier, label, ch_parts, media_paths,
                          f"Publish failed: {err or 'unknown'} — see Postiz UI; "
-                         f"for X this is usually depleted API credits.")
+                         f"for X this is usually depleted API credits.{pol_note}")
         else:  # QUEUE at timeout — workers likely down
             any_stuck = True
             print(f"    [{label}] STUCK in QUEUE after {POLL_TIMEOUT}s "
                   f"— worker pollers may be down (restart postiz).")
-            queue_manual(tier, label, parts, media_paths,
+            queue_manual(tier, label, ch_parts, media_paths,
                          "Stuck in QUEUE — Temporal workers likely down. "
-                         "Run `docker compose restart postiz`, then retry in the Postiz UI.")
+                         f"Run `docker compose restart postiz`, then retry in the Postiz UI.{pol_note}")
         result["channels"].append({"channel": label, "state": state, "url": url})
 
     # Mark the source handled UNLESS everything was merely stuck (transient infra):
@@ -309,6 +329,10 @@ def main() -> int:
                         "posted-log prevents repeats, so backlogs drip one/day)")
     p.add_argument("--regenerate", action="store_true",
                    help="re-compose text/imagery even if staged content exists")
+    p.add_argument("--oldest", action="store_true",
+                   help="pick the OLDEST unposted item instead of the newest "
+                        "(walk the backlog forward, e.g. while card images catch up)")
+    p.add_argument("--channel", help="publish to ONE channel only (e.g. linkedin, x)")
     p.add_argument("--check", action="store_true",
                    help="health check only (worker pollers + channels), no posting")
     args = p.parse_args()
@@ -334,7 +358,8 @@ def main() -> int:
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
     tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
-    summaries = [run_tier(t, push=args.push, since=since, regenerate=args.regenerate)
+    summaries = [run_tier(t, push=args.push, since=since, regenerate=args.regenerate,
+                          oldest=args.oldest, channel=args.channel)
                  for t in tiers]
 
     print("\n==== summary ====")

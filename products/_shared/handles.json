@@ -1,0 +1,6 @@
+{
+  "_comment": "Verified social handles per entity per channel. Keys are normalized entity names (lowercase, alphanumerics + single spaces). Only add VERIFIED handles — a wrong @ tags the wrong account. Figure handles verified 2026-07-05: X @Figure_robot (singular; @Figure_robots is an unaffiliated account), LinkedIn @figure-ai (@figure collides with fintech Figure Technologies).",
+  "figure ai": {"linkedin": "@figure-ai", "x": "@Figure_robot"},
+  "figure": {"linkedin": "@figure-ai", "x": "@Figure_robot"},
+  "nvidia": {"linkedin": "@nvidia", "x": "@nvidia"}
+}

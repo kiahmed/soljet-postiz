@@ -48,14 +48,16 @@ heal-check:     ## Report Temporal+worker health only (no restart); exit 1 if un
 check:          ## Daily poster's view: worker pollers + each tier's channels
 	python3 bin/daily.py --check
 
+# Add OLDEST=1 to any of these to walk the backlog forward (oldest unposted
+# first) instead of newest-first — e.g. while per-card images catch up.
 post-preview:   ## Compose today's posts for all enabled tiers, DO NOT publish
-	python3 bin/daily.py
+	python3 bin/daily.py $(if $(OLDEST),--oldest)
 
 regenerate:     ## Re-compose + re-stage today's posts (discard staged content), no publish
-	python3 bin/daily.py --regenerate
+	python3 bin/daily.py --regenerate $(if $(OLDEST),--oldest)
 
 post:           ## Publish today's posts for all enabled tiers (the daily run)
-	python3 bin/daily.py --push
+	python3 bin/daily.py --push $(if $(OLDEST),--oldest)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"

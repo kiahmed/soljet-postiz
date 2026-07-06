@@ -74,8 +74,14 @@ SUB_COLOR = "#A8B0BD"
 OWN_DOMAINS = {"arboryx.ai", "robotics.arboryx.ai"}
 
 
-def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str) -> list[Path]:
-    """Pick imagery for a bundle. Returns [] if no good option."""
+def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
+               *, force_attach: bool = False) -> list[Path]:
+    """Pick imagery for a bundle. Returns [] if no good option.
+
+    force_attach=True is used by the per-channel policy (e.g. LinkedIn 'attach'):
+    it skips the link-card decision and, for a card-anchored post, prefers the
+    destination's server-rendered og:image (the per-card PNG) over the entity
+    graph — the same image the link card would show, downloaded and attached."""
     # 1. Explicit media wins
     if bundle.media_paths:
         return bundle.media_paths
@@ -84,10 +90,17 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str) -> list[Path]:
 
     # 2. Deep-link funnel — when a deep link was injected into the post text
     #    and the tier opts in to LET_PLATFORM_RENDER_LINK_CARD (default true),
-    #    skip our image entirely so the platform (X/LinkedIn) auto-renders the
-    #    destination's og:image as a clickable link card.
-    if ctx.get("deep_link") and let_platform_render_link_card(tier):
+    #    skip our image entirely so the platform (X) auto-renders the
+    #    destination's og:image as a clickable link card. Skipped when a channel
+    #    policy forces attach (LinkedIn — link previews don't get the big view).
+    if not force_attach and ctx.get("deep_link") and let_platform_render_link_card(tier):
         return []
+
+    # 2b. Attach path — prefer the destination's own per-card og:image PNG.
+    if force_attach and ctx.get("deep_link"):
+        og = _og_card_image(ctx)
+        if og:
+            return [og]
 
     # Optional LLM router — reorders strategies, doesn't bypass user media
     forced_strategy = _llm_pick_strategy(bundle, recipe_name) if _llm_router_on() else None
@@ -134,6 +147,44 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str) -> list[Path]:
 
     # 7. None
     return []
+
+
+def _og_card_image(ctx: dict) -> Path | None:
+    """Download the deep-link page's og:image (the destination's server-rendered
+    per-card PNG) into the imagery cache and return its path, or None.
+
+    The page's og:image URL carries a `?g=<generation>` cache-buster, so we fetch
+    the page first to read the *current* URL rather than guessing the path (the
+    bare `/card-img/<id>.png` without the buster 404s). Cached by the full URL, so
+    a regenerated card (new generation) re-downloads automatically."""
+    link = ctx.get("deep_link")
+    if not link:
+        return None
+    try:
+        import re as _re
+        import urllib.request
+
+        def _fetch(url: str, timeout: int) -> bytes:
+            req = urllib.request.Request(url, headers={"User-Agent": "arboryx-daily/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+
+        html = _fetch(link, 25).decode("utf-8", "ignore")
+        m = _re.search(r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html)
+        if not m:
+            return None
+        img_url = m.group(1)
+        out = CACHE_DIR / f"card_og_{_hash(img_url)}.png"
+        if out.exists() and out.stat().st_size > 1000:
+            return out
+        data = _fetch(img_url, 30)
+        if not (data[:8].startswith(b"\x89PNG") or data[:2] == b"\xff\xd8"):
+            return None  # not a real image (e.g. a "not found" html body)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        return out
+    except Exception:  # noqa: BLE001 — degrade to the next ladder step / link card
+        return None
 
 
 # ---------- Strategy: KG screenshot ----------

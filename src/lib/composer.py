@@ -30,10 +30,15 @@ def _llm_rewrite(system_text: str, draft: str, *, max_chars: int = 280) -> str |
     """Voice-aligned rewrite via the unified LLM router (OpenAI → Gemini fallback)."""
     user_prompt = (
         f"Rewrite the draft below in the voice from the system context. "
-        f"Keep it under ~{max_chars} characters (X-friendly). "
-        f"Preserve URLs and tickers verbatim. Do not add hashtags I did not write. "
-        f"No emoji unless the draft already has them. Output the rewritten post only — "
-        f"no preamble, no quotes around it.\n\n"
+        f"Keep it under ~{max_chars} characters (X-friendly).\n"
+        f"STRICT GROUNDING — use ONLY the facts, company names, and numbers "
+        f"already present in the draft. Do NOT invent or add anything not in the "
+        f"draft: no funding amounts, valuations, dollar figures, investors, "
+        f"partners, product names, tickers, dates, or claims that aren't there. "
+        f"If the draft doesn't state a number, don't state one. "
+        f"Preserve any URLs and tickers verbatim; do NOT add new URLs. "
+        f"Do not add hashtags I did not write. No emoji unless the draft has them. "
+        f"Output the rewritten post only — no preamble, no quotes around it.\n\n"
         f"DRAFT:\n{draft}"
     )
     return llm_chat(system_text, user_prompt, max_tokens=512)
@@ -151,25 +156,60 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
     return _append_hashtags(rewritten, tags, max_chars)
 
 
-def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_chars: int = 280) -> str:
-    """Branch-tier composition from a KG catalyst row + its related rows."""
-    title = catalyst.get("title") or catalyst.get("name") or catalyst.get("finding") or "<catalyst>"
-    summary = catalyst.get("summary") or catalyst.get("description") or ""
+def primary_entities(card: dict, n: int = 3) -> list[dict]:
+    """Rank a card's entities by their weight in its relationships
+    (confidence * impact), the actor/subject side weighted higher — so hashtags
+    and @mentions feature the actual SUBJECT of the event, not whichever entities
+    happen to be listed first. Returns entity dicts, highest-weight first.
+    Falls back to declared order when a card has no relationships."""
+    ents = [e for e in (card.get("entities") or [])
+            if isinstance(e, dict) and e.get("name")]
+    if not ents:
+        return []
+    rels = card.get("relationships") or []
+    if not rels:
+        return ents[:n]
+    score = {e["name"]: 0.0 for e in ents}
+    for r in rels:
+        imp = r.get("impact_magnitude")
+        if imp is None:
+            imp = r.get("impact")
+        w = float(r.get("confidence") or 0) * float(imp or 0)
+        if r.get("from") in score:
+            score[r["from"]] += w * 1.25   # actor side weighted higher
+        if r.get("to") in score:
+            score[r["to"]] += w
+    return sorted(ents, key=lambda e: score.get(e["name"], 0.0), reverse=True)[:n]
 
-    rel_names = []
-    for r in related[:3]:
-        n = r.get("target_name") or r.get("name") or r.get("target_id") or r.get("target")
-        if n:
-            rel_names.append(str(n))
+
+def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_chars: int = 280) -> str:
+    """Branch-tier composition from a KG catalyst card + its related rows.
+
+    KG cards key their content as `headline` + `subtitle` (NOT title/summary) —
+    reading the right fields is what keeps the LLM grounded; with an empty draft
+    it hallucinates the whole post."""
+    title = (catalyst.get("headline") or catalyst.get("title")
+             or catalyst.get("name") or catalyst.get("finding") or "<catalyst>")
+    summary = (catalyst.get("subtitle") or catalyst.get("summary")
+               or catalyst.get("description") or "")
+
+    # Render relationships as explicit subject-verb-object facts (KG edges are
+    # {from, rel, to}). This is what grounds the LLM: without the real facts it
+    # fills a generic headline with invented specifics (wrong company, wrong deal).
+    rel_facts = []
+    for r in related[:4]:
+        f, rel, to = r.get("from"), r.get("rel"), r.get("to")
+        if f and rel and to:
+            rel_facts.append(f"{f} {str(rel).replace('_', ' ')} {to}")
 
     lines = [title]
     if summary:
         lines.append(f"\n{summary}")
-    if rel_names:
-        lines.append(f"\nLinked: {', '.join(rel_names)}")
+    if rel_facts:
+        lines.append("\nKey facts (use ONLY these): " + "; ".join(rel_facts))
     draft = "".join(lines)
 
     body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
     rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
-    tags = _relevant_hashtags(_sector_for(tier, catalyst), catalyst.get("entities"))
+    tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
     return _append_hashtags(rewritten, tags, max_chars)
