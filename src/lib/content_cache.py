@@ -52,3 +52,12 @@ def save(tier_id: str, source_id: str, *, source_type: str, text: str,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }, indent=2))
     return p
+
+
+def delete(tier_id: str, source_id: str) -> None:
+    """Remove a staged entry after it's been successfully posted (the posted-log
+    is the record now; the staged JSON is redundant). No-op if absent."""
+    try:
+        path_for(tier_id, source_id).unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass

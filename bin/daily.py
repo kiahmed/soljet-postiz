@@ -303,8 +303,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
                          f"Run `docker compose restart postiz`, then retry in the Postiz UI.{pol_note}")
         result["channels"].append({"channel": label, "state": state, "url": url})
 
-    if any_published:  # drop the one-shot downloaded card image from disk
+    if any_published:  # posted → drop the one-shot image + the staged content JSON
         cleanup_attach(attach_cache)
+        content_cache.delete(tier.id, source_id)
 
     # Mark the source handled UNLESS everything was merely stuck (transient infra):
     # a definitive ERROR won't improve on retry, but a dead-worker QUEUE will,
