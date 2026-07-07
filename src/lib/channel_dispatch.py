@@ -186,9 +186,10 @@ def entity_tags(tier, label: str, entities: list) -> list[str]:
 def channel_parts(tier, label: str, *, source_type: str, source_id: str,
                   parts: list[str], entities_cache):
     """Per-channel post parts: the body is identical across channels; we append
-    the channel's entity tags (@handles and/or $cashtags per ENTITY_TAG_MODE)
-    just before the deep link. Returns (parts, entities_cache) — entities_cache
-    memoizes the subject-entity lookup across channels."""
+    the channel's entity tags (@handles and/or $cashtags per ENTITY_TAG_MODE) at
+    the END OF THE FIRST PARAGRAPH — right after the hashtags, before the forward
+    hook + deep link. Returns (parts, entities_cache) — entities_cache memoizes
+    the subject-entity lookup across channels."""
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
     tags = entity_tags(tier, label, entities_cache) if entities_cache else []
@@ -196,12 +197,9 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
         return parts, entities_cache
     tag_str = " ".join(tags)
     p0 = parts[0]
-    dl = deep_link_from_text(p0)
-    marker = f"\n\n{dl}" if dl else None
-    if marker and marker in p0:            # insert before the blank line + deep link
-        p0 = p0.replace(marker, f" {tag_str}{marker}", 1)
-    elif dl and dl in p0:
-        p0 = p0.replace(dl, f"{tag_str} {dl}", 1)
+    if "\n\n" in p0:                       # after the first paragraph (hashtags)
+        head, rest = p0.split("\n\n", 1)
+        p0 = f"{head.rstrip()} {tag_str}\n\n{rest}"
     else:
         p0 = f"{p0.rstrip()} {tag_str}"
     return [p0] + list(parts[1:]), entities_cache

@@ -10,9 +10,28 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime, timezone
 
 from .config_loader import Tier, context_chain
 from .llm import chat as llm_chat
+
+
+def _card_age_days(date_str) -> int | None:
+    try:
+        d = datetime.fromisoformat(str(date_str)[:10]).replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - d).days
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _when_phrase(date_str) -> str | None:
+    """'mid May' / 'late March' / 'early June' from a YYYY-MM-DD date."""
+    try:
+        d = datetime.fromisoformat(str(date_str)[:10])
+    except Exception:  # noqa: BLE001
+        return None
+    bucket = "early" if d.day <= 10 else "mid" if d.day <= 20 else "late"
+    return f"{bucket} {d.strftime('%B')}"
 
 
 def _read_context(tier: Tier) -> str:
@@ -201,5 +220,18 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
     text = re.sub(r"\s*https?://\S+\s*$", "", text).strip()  # drop trailing source link
 
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
-    rewritten = text
-    return _append_hashtags(rewritten, tags, max_chars)
+
+    # Temporal framing (deterministic): a card older than a week opens with a
+    # "Back in <when>:" lead-in so it reads as context, not a filler dump. Every
+    # post ends with a forward hook before the deep link (added by the recipe).
+    age = _card_age_days(catalyst.get("date"))
+    recent = age is None or age <= 7
+    if not recent:
+        when = _when_phrase(catalyst.get("date"))
+        if when:
+            text = f"Back in {when}: {text}"
+    hook = ("Following how this unfolds ↓" if recent
+            else "How it's played out since — tracking it ↓")
+
+    body = _append_hashtags(text, tags, max_chars)
+    return f"{body}\n\n{hook}"
