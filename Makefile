@@ -19,8 +19,9 @@ status:         ## docker compose ps + app/DB/Temporal health checks
 down:           ## Stop & remove containers (volumes preserved)
 	./teardown.sh
 
-clean:          ## Reclaim docker disk: dangling images + build cache (safe)
+clean:          ## Reclaim docker disk + drop staged content_cache card JSON
 	./cleanup.sh
+	@find data/content_cache -mindepth 2 -name '*.json' -type f -print -delete 2>/dev/null || true
 
 clean-stopped:  ## clean + also remove stopped containers
 	./cleanup.sh --stopped
