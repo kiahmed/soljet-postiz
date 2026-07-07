@@ -34,18 +34,28 @@ def _when_phrase(date_str) -> str | None:
     return f"{bucket} {d.strftime('%B')}"
 
 
-def _temporal_frame(text: str, date_str) -> tuple[str, str]:
+def _temporal_frame(text: str, date_str, *, kind: str = "card") -> tuple[str, str]:
     """Deterministic temporal framing shared by both composers. Items older than
     a week open with a 'Back in <when>:' lead-in (so they read as context, not
-    filler); returns (lead-in-prefixed text, forward hook to place before the link)."""
+    filler); returns (lead-in-prefixed text, forward hook to place before the link).
+
+    kind='card' (robotics KG cards) — the link opens a rich per-card page with a
+      relationship graph, so the hook promises "how this played out".
+    kind='finding' (parent tier) — the link is just a simple entry, nothing to
+      visualize, so the hook is toned down to point at RELATED updates in the
+      space rather than this catalyst's evolution."""
     age = _card_age_days(date_str)
     recent = age is None or age <= 7
     if not recent:
         when = _when_phrase(date_str)
         if when:
             text = f"Back in {when}: {text}"
-    hook = ("Following how this unfolds ↓" if recent
-            else "How it's played out since — tracking it ↓")
+    if kind == "finding":
+        hook = ("See what else is moving in the space ↓" if recent
+                else "See what's followed in the space since ↓")
+    else:
+        hook = ("Following how this unfolds ↓" if recent
+                else "How it's played out since — tracking it ↓")
     return text, hook
 
 
@@ -187,8 +197,8 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
     body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
     rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
     tags = _relevant_hashtags(_sector_for(tier, finding), finding.get("entities"))
-    # Findings key their date as `timestamp`.
-    rewritten, hook = _temporal_frame(rewritten, finding.get("timestamp"))
+    # Findings key their date as `timestamp`. Toned-down hook (simple entry link).
+    rewritten, hook = _temporal_frame(rewritten, finding.get("timestamp"), kind="finding")
     body = _append_hashtags(rewritten, tags, max_chars)
     return f"{body}\n\n{hook}"
 
