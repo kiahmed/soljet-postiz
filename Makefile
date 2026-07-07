@@ -3,7 +3,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue \
-        post-card preview-card \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
         worktree-clean _notmain commit push pr ship
 
@@ -49,33 +48,20 @@ heal-check:     ## Report Temporal+worker health only (no restart); exit 1 if un
 check:          ## Daily poster's view: worker pollers + each tier's channels
 	python3 bin/daily.py --check
 
-# Add OLDEST=1 to any of these to walk the backlog forward (oldest unposted
-# first) instead of newest-first — e.g. while per-card images catch up.
-post-preview:   ## Compose today's posts for all enabled tiers, DO NOT publish
-	python3 bin/daily.py $(if $(OLDEST),--oldest)
+# Optional knobs for ALL post targets below:
+#   OLDEST=1               oldest unposted entry instead of newest
+#   CHANNEL=linkedin|x     one channel only (default: all the tier's channels)
+#   TIER=arboryx.robotics  one tier only (default: all enabled tiers)
+_POSTOPTS = $(if $(OLDEST),--oldest) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
 
-regenerate:     ## Re-compose + re-stage today's posts (discard staged content), no publish
-	python3 bin/daily.py --regenerate $(if $(OLDEST),--oldest)
+post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
+	python3 bin/daily.py $(_POSTOPTS)
 
-post:           ## Publish today's posts for all enabled tiers (the daily run)
-	python3 bin/daily.py --push $(if $(OLDEST),--oldest)
+regenerate:     ## Re-compose + re-stage (discard staged), no publish [OLDEST=1] [CHANNEL=] [TIER=]
+	python3 bin/daily.py --regenerate $(_POSTOPTS)
 
-# Post ONE specific existing card by id. CHANNEL default linkedin (CHANNEL=all
-# to fan out to every channel). TIER default arboryx.robotics.
-TIER    ?= arboryx.robotics
-CHANNEL ?= linkedin
-preview-card:   ## Preview one existing card, no publish: make preview-card <CARD_ID>
-	python3 bin/post.py --recipe single --tier $(TIER) --source-id "$(filter-out $@,$(MAKECMDGOALS))"
-
-post-card:      ## Publish one existing card: make post-card <CARD_ID> [CHANNEL=x|all] [TIER=..]
-	python3 bin/post.py --recipe single --tier $(TIER) --source-id "$(filter-out $@,$(MAKECMDGOALS))" \
-	  $(if $(filter all both,$(CHANNEL)),,--channel $(CHANNEL)) --push --mode now --force
-
-# Make the positional <CARD_ID> a no-op goal (scoped to these two targets only).
-ifneq ($(filter post-card preview-card,$(firstword $(MAKECMDGOALS))),)
-$(if $(filter-out post-card preview-card,$(MAKECMDGOALS)),\
-     $(eval $(filter-out post-card preview-card,$(MAKECMDGOALS)):;@:))
-endif
+post:           ## Publish posts [OLDEST=1] [CHANNEL=linkedin] [TIER=arboryx.robotics]
+	python3 bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
