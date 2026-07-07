@@ -3,6 +3,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue \
+        post-card preview-card \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
         worktree-clean _notmain commit push pr ship
 
@@ -58,6 +59,23 @@ regenerate:     ## Re-compose + re-stage today's posts (discard staged content),
 
 post:           ## Publish today's posts for all enabled tiers (the daily run)
 	python3 bin/daily.py --push $(if $(OLDEST),--oldest)
+
+# Post ONE specific existing card by id. CHANNEL default linkedin (CHANNEL=all
+# to fan out to every channel). TIER default arboryx.robotics.
+TIER    ?= arboryx.robotics
+CHANNEL ?= linkedin
+preview-card:   ## Preview one existing card, no publish: make preview-card <CARD_ID>
+	python3 bin/post.py --recipe single --tier $(TIER) --source-id "$(filter-out $@,$(MAKECMDGOALS))"
+
+post-card:      ## Publish one existing card: make post-card <CARD_ID> [CHANNEL=x|all] [TIER=..]
+	python3 bin/post.py --recipe single --tier $(TIER) --source-id "$(filter-out $@,$(MAKECMDGOALS))" \
+	  $(if $(filter all both,$(CHANNEL)),,--channel $(CHANNEL)) --push --mode now --force
+
+# Make the positional <CARD_ID> a no-op goal (scoped to these two targets only).
+ifneq ($(filter post-card preview-card,$(firstword $(MAKECMDGOALS))),)
+$(if $(filter-out post-card preview-card,$(MAKECMDGOALS)),\
+     $(eval $(filter-out post-card preview-card,$(MAKECMDGOALS)):;@:))
+endif
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
