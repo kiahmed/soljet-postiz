@@ -48,11 +48,12 @@ def deep_link_from_text(text: str) -> str | None:
 
 
 def attach_media(client, tier, source_type: str, source_id: str,
-                 parts: list[str], text: str) -> list[dict]:
+                 parts: list[str], text: str) -> tuple[list[dict], list[Path]]:
     """Media for an 'attach' channel (e.g. LinkedIn): run the imagery ladder in
     force-attach mode — prefers the destination's per-card og:image PNG, falling
-    back to the entity graph — then upload to Postiz. [] if nothing resolves (the
-    caller then degrades that channel to link_card). Never raises."""
+    back to the entity graph — then upload to Postiz. Returns (uploaded, local
+    paths); the caller deletes the local paths after a successful post. ([], [])
+    if nothing resolves (caller degrades to link_card). Never raises."""
     ctx: dict = {}
     dl = deep_link_from_text(text)
     if dl:
@@ -67,16 +68,17 @@ def attach_media(client, tier, source_type: str, source_id: str,
     try:
         paths = auto_media(tier, bundle, "single", force_attach=True)
     except Exception:  # noqa: BLE001
-        return []
-    out: list[dict] = []
+        return [], []
+    out, locals_ = [], []
     for p in paths:
         try:
             up = client.upload(Path(p))
             if up.get("id") and up.get("path"):
                 out.append({"id": up["id"], "path": up["path"]})
+                locals_.append(Path(p))
         except Exception:  # noqa: BLE001
             pass
-    return out
+    return out, locals_
 
 
 def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
@@ -84,8 +86,10 @@ def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
                   attach_cache):
     """Resolve the media list for ONE channel per its imagery policy.
 
-    Returns (media_list, attach_cache). attach_cache memoizes the (possibly
-    expensive) attach media across channels within one post — pass it back in.
+    Returns (media_list, attach_cache). attach_cache (a dict {media, paths} for
+    'attach' tiers) memoizes the upload across channels — pass it back in.
+    `cleanup_attach(attach_cache)` deletes the downloaded local files after a
+    successful post.
     """
     policy = tier.imagery_policy.get(label.lower())
     if policy == "link_card" and deep_link_from_text(text) is None:
@@ -94,9 +98,21 @@ def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
         return [], attach_cache
     if policy == "attach":
         if attach_cache is None:
-            attach_cache = attach_media(client, tier, source_type, source_id, parts, text)
-        return (attach_cache or []), attach_cache
+            media, locals_ = attach_media(client, tier, source_type, source_id, parts, text)
+            attach_cache = {"media": media, "paths": locals_}
+        return (attach_cache.get("media") or []), attach_cache
     return base_media, attach_cache  # legacy single-decision behavior
+
+
+def cleanup_attach(attach_cache) -> None:
+    """Delete the local attach images downloaded for this post (call after a
+    successful publish so data/imagery_cache doesn't accumulate one-shot PNGs)."""
+    if isinstance(attach_cache, dict):
+        for p in attach_cache.get("paths") or []:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def tier_has_channel_policy(tier) -> bool:
@@ -148,7 +164,11 @@ def entity_tags(tier, label: str, entities: list) -> list[str]:
             break
         h = resolve_handle(e, label, tier=tier) if handles_on else None
         ticker = e.get("ticker") if isinstance(e, dict) else None
-        cash = f"${ticker}" if (cash_on and ticker) else None
+        # Cashtags only work for US-style ALPHA tickers ($NVDA, $SHA). Skip
+        # numeric/foreign codes like FANUC's TSE 6954 → "$6954" is meaningless.
+        cash = (f"${ticker.upper()}"
+                if (cash_on and ticker and re.fullmatch(r"[A-Za-z]{1,6}", ticker))
+                else None)
         if mode == "handle_only":
             candidates = [h]
         elif mode == "cashtag_only":

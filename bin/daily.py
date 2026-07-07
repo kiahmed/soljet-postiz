@@ -38,7 +38,7 @@ from pathlib import Path
 from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
 from src.lib import content_cache
 from src.lib.channel_dispatch import (
-    channel_label, channel_media, channel_parts, deep_link_from_text)
+    channel_label, channel_media, channel_parts, cleanup_attach, deep_link_from_text)
 from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
 from src.lib.imagery import auto_media
 from src.lib.posted_log import mark_posted, posted_ids_for
@@ -302,6 +302,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
                          "Stuck in QUEUE — Temporal workers likely down. "
                          f"Run `docker compose restart postiz`, then retry in the Postiz UI.{pol_note}")
         result["channels"].append({"channel": label, "state": state, "url": url})
+
+    if any_published:  # drop the one-shot downloaded card image from disk
+        cleanup_attach(attach_cache)
 
     # Mark the source handled UNLESS everything was merely stuck (transient infra):
     # a definitive ERROR won't improve on retry, but a dead-worker QUEUE will,
