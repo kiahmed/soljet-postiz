@@ -118,13 +118,21 @@ def _entities_for(tier, source_type: str, source_id: str) -> list:
 
 def channel_parts(tier, label: str, *, source_type: str, source_id: str,
                   parts: list[str], entities_cache):
-    """Per-channel post parts: append the channel-correct @handles for the
-    item's entities (Figure AI → @figure on LinkedIn, @Figure_robots on X).
-    Only the mentions differ per channel; the rest of the copy is identical.
-    Returns (parts, entities_cache) — entities_cache memoizes the entity lookup."""
+    """Per-channel post parts. Handle (@mention) injection is DISABLED for now —
+    the post text is identical across every channel (clean KG copy + hashtags).
+    Re-enable once a verified handle source lands (see the handle-strategy
+    analysis / design-per-channel-imagery); the injection wiring is preserved in
+    handles.apply_handles + handle_injection_enabled()."""
+    if not handle_injection_enabled():
+        return parts, entities_cache
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
     if not entities_cache or not parts:
         return parts, entities_cache
     return ([apply_handles(parts[0], entities_cache, label)] + list(parts[1:]),
             entities_cache)
+
+
+def handle_injection_enabled() -> bool:
+    import os
+    return os.getenv("HANDLE_INJECTION", "false").lower() == "true"

@@ -183,33 +183,21 @@ def primary_entities(card: dict, n: int = 3) -> list[dict]:
 
 
 def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_chars: int = 280) -> str:
-    """Branch-tier composition from a KG catalyst card + its related rows.
+    """Branch-tier composition from a KG catalyst card.
 
-    KG cards key their content as `headline` + `subtitle` (NOT title/summary) —
-    reading the right fields is what keeps the LLM grounded; with an empty draft
-    it hallucinates the whole post."""
-    title = (catalyst.get("headline") or catalyst.get("title")
-             or catalyst.get("name") or catalyst.get("finding") or "<catalyst>")
-    summary = (catalyst.get("subtitle") or catalyst.get("summary")
-               or catalyst.get("description") or "")
+    DETERMINISTIC, no LLM: the KG already authors the post copy. We use the card's
+    own share text (or headline) verbatim — same text for every channel — and
+    append deterministic hashtags. No arbor-voice rewrite (it fabricated facts),
+    no per-channel text divergence. The deep link is appended by the recipe; the
+    per-card image is attached per the channel imagery policy."""
+    share = catalyst.get("share") or {}
+    # Prefer the KG's own share copy; strip any trailing source URL so the recipe's
+    # arboryx deep link is the only link. Fall back to headline.
+    text = (share.get("linkedin_text") or share.get("twitter_text")
+            or catalyst.get("headline") or catalyst.get("title")
+            or catalyst.get("subtitle") or "<catalyst>")
+    text = re.sub(r"\s*https?://\S+\s*$", "", text).strip()  # drop trailing source link
 
-    # Render relationships as explicit subject-verb-object facts (KG edges are
-    # {from, rel, to}). This is what grounds the LLM: without the real facts it
-    # fills a generic headline with invented specifics (wrong company, wrong deal).
-    rel_facts = []
-    for r in related[:4]:
-        f, rel, to = r.get("from"), r.get("rel"), r.get("to")
-        if f and rel and to:
-            rel_facts.append(f"{f} {str(rel).replace('_', ' ')} {to}")
-
-    lines = [title]
-    if summary:
-        lines.append(f"\n{summary}")
-    if rel_facts:
-        lines.append("\nKey facts (use ONLY these): " + "; ".join(rel_facts))
-    draft = "".join(lines)
-
-    body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
-    rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
+    rewritten = text
     return _append_hashtags(rewritten, tags, max_chars)
