@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from .config_loader import Tier, load_tier
-from .handles import apply_handles
+from .handles import resolve_handle
 from .imagery import auto_media
 from .recipes import PostBundle
 from .sources.factory import build_source
@@ -116,23 +116,72 @@ def _entities_for(tier, source_type: str, source_id: str) -> list:
         return []
 
 
+def _tier_cfg(tier, key: str, default: str) -> str:
+    """Read a tier.config value, walking up the parent chain (like imagery_policy)."""
+    t = tier
+    while t is not None:
+        if key in t.raw and t.raw[key] != "":
+            return t.raw[key]
+        t = load_tier(t.parent_id) if t.parent_id else None
+    return default
+
+
+def entity_tags(tier, label: str, entities: list) -> list[str]:
+    """Per-channel tags for the subject entities, per ENTITY_TAG_MODE:
+    prefer_handle (default) | handle_only | cashtag_only | both.
+      - @handle: resolved via handles.resolve_handle (card-embedded → endpoint →
+        store), gated by HANDLE_INJECTION. Per channel.
+      - $TICKER cashtag: gated by CASHTAGS_ENABLED, and ONLY for entities that
+        carry a stock ticker (public companies) — never a $ before every name.
+    """
+    mode = str(_tier_cfg(tier, "ENTITY_TAG_MODE", "prefer_handle")).lower()
+    handles_on = str(_tier_cfg(tier, "HANDLE_INJECTION", "false")).lower() == "true"
+    cash_on = str(_tier_cfg(tier, "CASHTAGS_ENABLED", "true")).lower() == "true"
+    try:
+        max_tags = int(_tier_cfg(tier, "MAX_ENTITY_TAGS", "2"))
+    except ValueError:
+        max_tags = 2
+
+    tags: list[str] = []
+    for e in entities:
+        if len(tags) >= max_tags:
+            break
+        h = resolve_handle(e, label, tier=tier) if handles_on else None
+        ticker = e.get("ticker") if isinstance(e, dict) else None
+        cash = f"${ticker}" if (cash_on and ticker) else None
+        if mode == "handle_only":
+            candidates = [h]
+        elif mode == "cashtag_only":
+            candidates = [cash]
+        elif mode == "both":
+            candidates = [h, cash]
+        else:  # prefer_handle
+            candidates = [h or cash]
+        for c in candidates:
+            if c and c not in tags and len(tags) < max_tags:
+                tags.append(c)
+    return tags
+
+
 def channel_parts(tier, label: str, *, source_type: str, source_id: str,
                   parts: list[str], entities_cache):
-    """Per-channel post parts. Handle (@mention) injection is DISABLED for now —
-    the post text is identical across every channel (clean KG copy + hashtags).
-    Re-enable once a verified handle source lands (see the handle-strategy
-    analysis / design-per-channel-imagery); the injection wiring is preserved in
-    handles.apply_handles + handle_injection_enabled()."""
-    if not handle_injection_enabled():
-        return parts, entities_cache
+    """Per-channel post parts: the body is identical across channels; we append
+    the channel's entity tags (@handles and/or $cashtags per ENTITY_TAG_MODE)
+    just before the deep link. Returns (parts, entities_cache) — entities_cache
+    memoizes the subject-entity lookup across channels."""
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
-    if not entities_cache or not parts:
+    tags = entity_tags(tier, label, entities_cache) if entities_cache else []
+    if not tags or not parts:
         return parts, entities_cache
-    return ([apply_handles(parts[0], entities_cache, label)] + list(parts[1:]),
-            entities_cache)
-
-
-def handle_injection_enabled() -> bool:
-    import os
-    return os.getenv("HANDLE_INJECTION", "false").lower() == "true"
+    tag_str = " ".join(tags)
+    p0 = parts[0]
+    dl = deep_link_from_text(p0)
+    marker = f"\n\n{dl}" if dl else None
+    if marker and marker in p0:            # insert before the blank line + deep link
+        p0 = p0.replace(marker, f" {tag_str}{marker}", 1)
+    elif dl and dl in p0:
+        p0 = p0.replace(dl, f"{tag_str} {dl}", 1)
+    else:
+        p0 = f"{p0.rstrip()} {tag_str}"
+    return [p0] + list(parts[1:]), entities_cache

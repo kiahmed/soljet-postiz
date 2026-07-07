@@ -232,37 +232,29 @@ def main() -> int:
 
     publish_date = _resolve_publish_date(args)
 
-    if tier.imagery_policy:
-        # Per-channel imagery: split into one create_post per integration so the
-        # image[] list can differ (X link_card / LinkedIn attach). Content is
-        # identical across channels; only media differs.
-        res_all = []
-        attach_cache = None
-        entities_cache = None
-        for iid in iids:
-            label = channel_label(tier, iid)
-            ch_media, attach_cache = channel_media(
-                client, tier, label, source_type=bundle.source_type,
-                source_id=bundle.source_id, parts=parts, text=bundle.text,
-                base_media=media, attach_cache=attach_cache)
-            ch_parts, entities_cache = channel_parts(
-                tier, label, source_type=bundle.source_type,
-                source_id=bundle.source_id, parts=parts, entities_cache=entities_cache)
-            print(f"  [{label}] imagery: {tier.imagery_policy.get(label.lower(),'legacy')} "
-                  f"→ {len(ch_media)} media")
-            r = client.create_post(parts=ch_parts, integration_ids=[iid], mode=args.mode,
-                                   publish_date=publish_date, media=ch_media or None)
-            if isinstance(r, list):
-                res_all.extend(r)
-        res = res_all
-    else:
-        res = client.create_post(
-            parts=parts,
-            integration_ids=iids,
-            mode=args.mode,
-            publish_date=publish_date,
-            media=media or None,
-        )
+    # Always split into one create_post per integration so both media (imagery
+    # policy) AND text (per-channel @handles/tags) can differ. For legacy tiers
+    # with neither, channel_media/channel_parts return the base values unchanged,
+    # so per-integration calls produce identical results to a single fan-out.
+    res_all = []
+    attach_cache = None
+    entities_cache = None
+    for iid in iids:
+        label = channel_label(tier, iid)
+        ch_media, attach_cache = channel_media(
+            client, tier, label, source_type=bundle.source_type,
+            source_id=bundle.source_id, parts=parts, text=bundle.text,
+            base_media=media, attach_cache=attach_cache)
+        ch_parts, entities_cache = channel_parts(
+            tier, label, source_type=bundle.source_type,
+            source_id=bundle.source_id, parts=parts, entities_cache=entities_cache)
+        print(f"  [{label}] imagery: {tier.imagery_policy.get(label.lower(),'legacy')} "
+              f"→ {len(ch_media)} media")
+        r = client.create_post(parts=ch_parts, integration_ids=[iid], mode=args.mode,
+                               publish_date=publish_date, media=ch_media or None)
+        if isinstance(r, list):
+            res_all.extend(r)
+    res = res_all
 
     postiz_post_id = ""
     if isinstance(res, list) and res:

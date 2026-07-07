@@ -191,11 +191,13 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
     no per-channel text divergence. The deep link is appended by the recipe; the
     per-card image is attached per the channel imagery policy."""
     share = catalyst.get("share") or {}
-    # Prefer the KG's own share copy; strip any trailing source URL so the recipe's
-    # arboryx deep link is the only link. Fall back to headline.
-    text = (share.get("linkedin_text") or share.get("twitter_text")
-            or catalyst.get("headline") or catalyst.get("title")
-            or catalyst.get("subtitle") or "<catalyst>")
+    headline = (catalyst.get("headline") or catalyst.get("title")
+                or catalyst.get("subtitle") or "<catalyst>")
+    # POST_TEXT_SOURCE: 'share' (default, the KG's authored copy) | 'headline'.
+    if str(tier.raw.get("POST_TEXT_SOURCE", "share")).lower() == "headline":
+        text = headline
+    else:
+        text = share.get("linkedin_text") or share.get("twitter_text") or headline
     text = re.sub(r"\s*https?://\S+\s*$", "", text).strip()  # drop trailing source link
 
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
