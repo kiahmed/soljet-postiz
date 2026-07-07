@@ -34,6 +34,21 @@ def _when_phrase(date_str) -> str | None:
     return f"{bucket} {d.strftime('%B')}"
 
 
+def _temporal_frame(text: str, date_str) -> tuple[str, str]:
+    """Deterministic temporal framing shared by both composers. Items older than
+    a week open with a 'Back in <when>:' lead-in (so they read as context, not
+    filler); returns (lead-in-prefixed text, forward hook to place before the link)."""
+    age = _card_age_days(date_str)
+    recent = age is None or age <= 7
+    if not recent:
+        when = _when_phrase(date_str)
+        if when:
+            text = f"Back in {when}: {text}"
+    hook = ("Following how this unfolds ↓" if recent
+            else "How it's played out since — tracking it ↓")
+    return text, hook
+
+
 def _read_context(tier: Tier) -> str:
     parts = []
     for p in context_chain(tier):
@@ -172,7 +187,10 @@ def compose_finding(tier: Tier, finding: dict, *, max_chars: int = 280) -> str:
     body_budget = max(120, max_chars - _HASHTAG_RESERVE)  # leave room for tags
     rewritten = _llm_rewrite(_read_context(tier), draft, max_chars=body_budget) or draft[:body_budget]
     tags = _relevant_hashtags(_sector_for(tier, finding), finding.get("entities"))
-    return _append_hashtags(rewritten, tags, max_chars)
+    # Findings key their date as `timestamp`.
+    rewritten, hook = _temporal_frame(rewritten, finding.get("timestamp"))
+    body = _append_hashtags(rewritten, tags, max_chars)
+    return f"{body}\n\n{hook}"
 
 
 def primary_entities(card: dict, n: int = 3) -> list[dict]:
@@ -221,17 +239,6 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
 
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
 
-    # Temporal framing (deterministic): a card older than a week opens with a
-    # "Back in <when>:" lead-in so it reads as context, not a filler dump. Every
-    # post ends with a forward hook before the deep link (added by the recipe).
-    age = _card_age_days(catalyst.get("date"))
-    recent = age is None or age <= 7
-    if not recent:
-        when = _when_phrase(catalyst.get("date"))
-        if when:
-            text = f"Back in {when}: {text}"
-    hook = ("Following how this unfolds ↓" if recent
-            else "How it's played out since — tracking it ↓")
-
+    text, hook = _temporal_frame(text, catalyst.get("date"))
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"
