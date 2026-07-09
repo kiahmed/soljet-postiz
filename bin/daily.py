@@ -230,17 +230,29 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
 
     print(f"[{tier_id}] {source_id} → {len(iids)} channel(s)"
           f"{'  [reusing staged content]' if staged else ''}")
-    print("  " + "\n  ".join(parts[0].splitlines()))
-    print(f"  [media] {media_paths[0] if media_paths else 'none'}")
 
     if not push:
+        # Render the EXACT per-channel text (@handles/$cashtags differ per
+        # channel) so preview == publish.
         result["status"] = "preview"
+        entities_cache = None
         for i in iids:
             lbl = channel_label(tier, i)
             pol = tier.imagery_policy.get(lbl.lower(), "legacy")
-            print(f"  [{lbl}] imagery: {pol}")
+            note = (" → attaches the card image" if pol == "attach"
+                    else " → no media; platform renders the link card" if pol == "link_card"
+                    else f" → {media_paths[0] if media_paths else 'no media'}")
+            ch_parts, entities_cache = channel_parts(
+                tier, lbl, source_type=source_type, source_id=source_id,
+                parts=parts, entities_cache=entities_cache)
+            print(f"  --- [{lbl}]  imagery: {pol}{note} ---")
+            for line in "\n\n".join(ch_parts).splitlines():
+                print(f"  {line}")
             result["channels"].append({"channel": lbl, "state": "preview", "imagery": pol})
         return result
+
+    print("  " + "\n  ".join(parts[0].splitlines()))
+    print(f"  [media] {media_paths[0] if media_paths else 'none'}")
 
     # Upload media once; reuse the ids across channels.
     client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY"))

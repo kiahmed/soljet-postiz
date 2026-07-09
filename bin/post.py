@@ -172,13 +172,31 @@ def main() -> int:
     if not args.no_auto_media:
         bundle.media_paths = auto_media(tier, bundle, args.recipe)
 
+    # Resolve target channels up front so the DRAFT shows the EXACT per-channel
+    # text — @handles/$cashtags differ per channel. preview == publish.
+    iids = integration_ids_for(tier)
+    if args.channel:
+        iids = [i for i in iids if channel_label(tier, i).lower() == args.channel.lower()]
+
     print("---- DRAFT ----")
-    if len(parts) == 1:
-        print(parts[0])
+    entities_cache = None
+    if iids:
+        for iid in iids:
+            label = channel_label(tier, iid)
+            pol = tier.imagery_policy.get(label.lower(), "legacy")
+            note = (" → attaches the card image" if pol == "attach"
+                    else " → no media; platform renders the link card" if pol == "link_card"
+                    else "")
+            ch_parts, entities_cache = channel_parts(
+                tier, label, source_type=bundle.source_type, source_id=bundle.source_id,
+                parts=parts, entities_cache=entities_cache)
+            print(f"--- [{label}]  imagery: {pol}{note} ---")
+            for i, p in enumerate(ch_parts, 1):
+                if len(ch_parts) > 1:
+                    print(f"  ({i}/{len(ch_parts)}, {len(p)} chars)")
+                print(p)
     else:
-        for i, p in enumerate(parts, 1):
-            print(f"--- {i}/{len(parts)} ({len(p)} chars) ---")
-            print(p)
+        print("\n\n".join(parts))
     for m in bundle.media_paths:
         print(f"[media] {m}")
     if not bundle.media_paths and not args.no_auto_media:
@@ -210,12 +228,10 @@ def main() -> int:
         print(f"already posted: {bundle.source_type}/{bundle.source_id} on {tier.id} (use --force)")
         return 0
 
-    iids = integration_ids_for(tier)
-    if args.channel:  # restrict to one channel (e.g. --channel linkedin)
-        iids = [i for i in iids if channel_label(tier, i).lower() == args.channel.lower()]
-        if not iids:
-            print(f"no channel matching '{args.channel}'", file=sys.stderr)
-            return 1
+    # `iids` was resolved above (before the DRAFT print) so preview == publish.
+    if args.channel and not iids:
+        print(f"no channel matching '{args.channel}'", file=sys.stderr)
+        return 1
     if not iids:
         print("no integration IDs to push to (channels empty or all gated off)", file=sys.stderr)
         return 1
