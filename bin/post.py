@@ -8,7 +8,13 @@ Recipes:
   event           — ad-hoc title/body/link/media for one-off posts
 
 Common flags:
-  --tier <id>           parent ('arboryx') or branch ('arboryx.robotics')
+  --tier <id>           parent ('arboryx') or branch ('arboryx.robotics').
+                        Omit with `--recipe single` to auto-detect: every
+                        enabled tier whose primary source owns --source-id
+                        runs, each with its own composition/imagery/links.
+                          bin/post.py --recipe single --source-id ROB-031526-001
+                        → posts from BOTH arboryx (entry link) and
+                          arboryx.robotics (card + image).
   --push                actually create in Postiz (default: print only)
   --mode draft|schedule|now
   --at <iso> | --in 2h|30m|1d   (only for --mode schedule)
@@ -26,8 +32,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
-from src.lib.config_loader import load_tier
+from _common import REPO_ROOT, build_source, integration_ids_for, load_dotenv, parse_since
+from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier
 from src.lib.posted_log import is_posted, mark_posted
 from src.lib.channel_dispatch import channel_label, channel_media, channel_parts
 from src.lib.postiz_client import PostizClient
@@ -106,11 +112,53 @@ def _resolve_publish_date(args) -> str | None:
     return None
 
 
+def _owns(tier, source_id: str) -> bool:
+    """True if the tier's PRIMARY source can resolve source_id.
+
+    Primary source only: a branch tier also inherits its parent's Firestore as a
+    later source, so scanning every source would make robotics falsely claim the
+    parent's finding ids.
+    """
+    if not tier.sources:
+        return False
+    try:
+        return build_source(tier.sources[0], tier).get(source_id) is not None
+    except Exception:  # noqa: BLE001 — miss, bad creds, wrong shape: not ours
+        return False
+
+
+def _resolve_tiers(args) -> list:
+    """Explicit --tier wins. Otherwise auto-detect across every enabled tier."""
+    if args.tier:
+        return [load_tier(args.tier)]
+    if args.recipe != "single" or not args.source_id:
+        raise SystemExit("--tier is required (auto-detect needs "
+                         "--recipe single --source-id)")
+
+    matches = []
+    for tier_id in _TIER_DIR_BY_ID:
+        try:
+            tier = load_tier(tier_id)
+        except Exception:  # noqa: BLE001
+            continue
+        if not integration_ids_for(tier):
+            continue  # tier has no live channels — not a publish target
+        if _owns(tier, args.source_id):
+            matches.append(tier)
+
+    if not matches:
+        raise SystemExit(
+            f"'{args.source_id}' not found in the primary source of any enabled "
+            f"tier ({', '.join(_TIER_DIR_BY_ID)}). Pass --tier to force one.")
+    return matches
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--recipe", required=True,
                    choices=["single", "narrative", "sector-digest", "event"])
-    p.add_argument("--tier", required=True)
+    p.add_argument("--tier", help="tier id; omit with --recipe single to auto-detect "
+                                  "which enabled tier owns --source-id")
     p.add_argument("--push", action="store_true")
     p.add_argument("--mode", default="draft", choices=["draft", "schedule", "now"])
     p.add_argument("--at")
@@ -138,8 +186,25 @@ def main() -> int:
     args = p.parse_args()
 
     load_dotenv()
-    tier = load_tier(args.tier)
+    tiers = _resolve_tiers(args)
+    if not args.tier:
+        print(f"auto-detected tier(s): {', '.join(t.id for t in tiers)}")
 
+    rc = 0
+    for tier in tiers:
+        if len(tiers) == 1:
+            rc = run_for_tier(tier, args) or rc
+            continue
+        print(f"\n===== tier: {tier.id} =====")
+        try:  # one tier failing must not strand the others mid-push
+            rc = run_for_tier(tier, args) or rc
+        except Exception as e:  # noqa: BLE001
+            print(f"[{tier.id}] failed: {e}", file=sys.stderr)
+            rc = 1
+    return rc
+
+
+def run_for_tier(tier, args) -> int:
     if args.recipe == "single":
         if not args.source_id:
             raise SystemExit("--source-id required for --recipe single")
