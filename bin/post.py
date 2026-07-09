@@ -9,12 +9,13 @@ Recipes:
 
 Common flags:
   --tier <id>           parent ('arboryx') or branch ('arboryx.robotics').
-                        Omit with `--recipe single` to auto-detect: every
-                        enabled tier whose primary source owns --source-id
-                        runs, each with its own composition/imagery/links.
+                        Omit with `--recipe single` to auto-detect the enabled
+                        tier that owns --source-id. A card resolves in both the
+                        parent and its branch (branches inherit the parent's
+                        Firestore); the BRANCH wins — richer card, image, own
+                        deep link. Pass --tier explicitly to force the parent.
                           bin/post.py --recipe single --source-id ROB-031526-001
-                        → posts from BOTH arboryx (entry link) and
-                          arboryx.robotics (card + image).
+                        → arboryx.robotics only.
   --push                actually create in Postiz (default: print only)
   --mode draft|schedule|now
   --at <iso> | --in 2h|30m|1d   (only for --mode schedule)
@@ -145,6 +146,13 @@ def _resolve_tiers(args) -> list:
             continue  # tier has no live channels — not a publish target
         if _owns(tier, args.source_id):
             matches.append(tier)
+
+    # Most-specific tier wins. A branch inherits its parent's Firestore, so a
+    # card resolves in BOTH 'arboryx' and 'arboryx.robotics'. The branch owns
+    # it — richer card, image, and its own deep link. Drop any tier that is an
+    # ancestor ('arboryx') of another match ('arboryx.<branch>').
+    matches = [t for t in matches
+               if not any(o.id.startswith(f"{t.id}.") for o in matches)]
 
     if not matches:
         raise SystemExit(
