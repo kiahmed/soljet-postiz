@@ -188,6 +188,10 @@ services:
       # identity-mounted below at the exact same path, so this path is valid
       # inside the container too. Empty -> falls back to the mounted user ADC.
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      # The KG handle-resolver runs on the HOST. From inside this container the
+      # host is `host.docker.internal` (not localhost). A real env var here beats
+      # .env's localhost value, so each context resolves the right name.
+      HANDLE_ENDPOINT_URL: http://host.docker.internal:8084
     volumes:
       - .:/app                                        # repo + .env + data/ (logs, posted-log)
       - /var/run/docker.sock:/var/run/docker.sock     # so daily.py/heal.sh can exec siblings
