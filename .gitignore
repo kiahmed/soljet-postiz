@@ -12,6 +12,9 @@ dev-utils/error.log
 # Local scratch notes (session ids, OAuth probe URLs, etc.)
 notes.txt
 
+# Internal engineering log — kept local, not published
+docs/workbench.md
+
 # Local data — posted-log SQLite + generated imagery cache (per-machine, not shared)
 data/posted_log.sqlite
 data/posted_log.sqlite-journal
