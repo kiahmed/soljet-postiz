@@ -163,6 +163,13 @@ def entity_tags(tier, label: str, entities: list) -> list[str]:
         if len(tags) >= max_tags:
             break
         h = resolve_handle(e, label, tier=tier) if handles_on else None
+        # LinkedIn only renders a REAL mention from the URN token
+        # `@[Name](urn:li:organization:<id>)`; a bare `@slug` is dead text. Turn
+        # the verified slug into that token via the LinkedIn API. Fail closed:
+        # no URN → drop the tag (never emit a broken/dead mention). X keeps @slug.
+        if h and label.lower() == "linkedin":
+            from .linkedin_urn import to_mention
+            h = to_mention(h, e.get("name") if isinstance(e, dict) else None)
         ticker = e.get("ticker") if isinstance(e, dict) else None
         # Cashtags only work for US-style ALPHA tickers ($NVDA, $SHA). Skip
         # numeric/foreign codes like FANUC's TSE 6954 → "$6954" is meaningless.
