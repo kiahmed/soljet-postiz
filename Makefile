@@ -6,6 +6,16 @@
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
         worktree-clean _notmain commit push pr ship
 
+# ---- typo guard: reject unknown KEY=val on the command line ---------------
+# `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
+# card. Catch it: any command-line variable not in this allowlist aborts.
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE m
+_cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
+_unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
+ifneq ($(_unknown_vars),)
+$(error unknown option(s): $(_unknown_vars) — valid knobs are: $(KNOWN_VARS). Check spelling (e.g. OLDEST, not OLDERST))
+endif
+
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
 	./deploy.sh
