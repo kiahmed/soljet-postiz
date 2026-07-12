@@ -3,6 +3,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue \
+        social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
         worktree-clean _notmain commit push pr ship
 
@@ -77,6 +78,21 @@ post:           ## Publish posts [OLDEST=1] [CHANNEL=linkedin] [TIER=arboryx.rob
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
 
+# Handle→URN cache tools. The operation is in the target NAME (not a positional
+# word) on purpose: a bare `update` goal would collide with the `make update`
+# stack target. Args are <channel> then a free-form <entity...> (case-insensitive).
+social-cache:        ## Handle→URN cache tools — see social-cache-{list,clean,update}
+	@python3 bin/social-cache.py
+
+social-cache-list:   ## List cached handle→URN entries (usage: make social-cache-list <channel> [entity...])
+	@python3 bin/social-cache.py list $(filter-out $@,$(MAKECMDGOALS))
+
+social-cache-clean:  ## Drop matching entries so they re-resolve (usage: make social-cache-clean <channel> <entity...>)
+	@python3 bin/social-cache.py delete $(filter-out $@,$(MAKECMDGOALS))
+
+social-cache-update: ## Re-resolve matching entries live (usage: make social-cache-update <channel> <entity...>)
+	@python3 bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
+
 # ---- docker scheduler (opt-in `scheduler` compose profile) ---------------
 scheduler-up:       ## Build & start the daily scheduler container
 	docker compose --profile scheduler up -d --build scheduler
@@ -97,12 +113,14 @@ scheduler-run:      ## Fire one daily run NOW inside the scheduler (test/manual)
 worktree-clean:     ## Remove a merged worktree, or (no name) return to main + delete branch (usage: make worktree-clean [<name>] [FORCE=1])
 	@./bin/worktree-clean.sh "$(filter-out $@,$(MAKECMDGOALS))" "FORCE=$(FORCE)"
 
-# Let a name be positional (`make worktree-clean <name>`, `make ship <name>`):
-# turn the trailing name into a no-op goal so make doesn't error on it. Scoped
-# to these two targets only, so it never masks typos in other targets.
-ifneq (,$(filter worktree-clean ship,$(firstword $(MAKECMDGOALS))))
-$(if $(filter-out worktree-clean ship,$(MAKECMDGOALS)),\
-     $(eval $(filter-out worktree-clean ship,$(MAKECMDGOALS)):;@:))
+# Let args be positional (`make worktree-clean <name>`, `make ship <name>`,
+# `make social-cache <op> <channel> <entity...>`): turn the trailing words into
+# no-op goals so make doesn't error on them. Scoped to these targets only, so it
+# never masks typos in other targets.
+_POSGOAL_TARGETS := worktree-clean ship social-cache-list social-cache-clean social-cache-update
+ifneq (,$(filter $(_POSGOAL_TARGETS),$(firstword $(MAKECMDGOALS))))
+$(if $(filter-out $(_POSGOAL_TARGETS),$(MAKECMDGOALS)),\
+     $(eval $(filter-out $(_POSGOAL_TARGETS),$(MAKECMDGOALS)):;@:))
 endif
 
 # ---- git workflow (run inside a worktree branch) -------------------------
