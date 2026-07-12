@@ -8,11 +8,12 @@ crosses that with what we've actually posted).
   make post-status TIER=arboryx.robotics MISSING=1   # also LIST the ids blocked
                                                      # on a missing PNG
 
-Per tier it reports, over the catalysts in the tier's PRIMARY source:
+It reports EVERY data source declared in the product's config (source 1 is
+flagged as primary — the one the poster actually pulls from), and per source:
   - posted / unposted           (from data/posted_log.sqlite)
-  - PNG rendered (total)        (KG's data/exports/card_images/<id>.png)
-  - unposted WITH png           = ready to post now
-  - unposted MISSING png        = waiting on a KG render
+  - PNG rendered                (KG's data/exports/card_images/<id>.png)
+  - unposted ready / blocked    (has png = ready; missing png = waiting on render)
+plus a combined unique-id total across sources.
 
 PNG source: the KG repo's local render dir, resolved from each tier's
 KG_REPO_PATH (override with env KG_CARD_IMAGES_DIR). A tier with no card-render
@@ -55,10 +56,8 @@ def _png_dir(tier) -> Path | None:
     return Path(env) if env else resolved  # nonexistent path → reported as n/a
 
 
-def _ids(tier) -> list[str]:
-    if not tier.sources:
-        return []
-    src = build_source(tier.sources[0], tier)
+def _ids_for(ds, tier) -> list[str]:
+    src = build_source(ds, tier)
     out = []
     for it in src.list_recent(since=_SINCE, limit=_LIMIT):
         sid = str(it.get("id") or it.get("catalyst_id")
@@ -66,6 +65,12 @@ def _ids(tier) -> list[str]:
         if sid:
             out.append(sid)
     return out
+
+
+def _src_label(ds) -> str:
+    p = getattr(ds, "params", None) or {}
+    ident = p.get("collection") or p.get("path") or p.get("inherit_from") or ""
+    return f"{ds.type}" + (f" ({ident})" if ident else "")
 
 
 def _row(label: str, value) -> None:
@@ -79,13 +84,8 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
         print(f"[{tier_id}] load failed: {e}", file=sys.stderr)
         return
     print(f"\n[{tier.id}]  {tier.raw.get('TIER_NAME', '')}")
-    try:
-        ids = _ids(tier)
-    except Exception as e:  # noqa: BLE001
-        print(f"    source error: {e}", file=sys.stderr)
-        return
-    if not ids:
-        _row("catalysts in source", 0)
+    if not tier.sources:
+        print("    (no data sources configured)")
         return
 
     posted = posted_ids_for(tier.id)
@@ -95,33 +95,45 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
     def has_png(cid: str) -> bool:
         return has_pngs and (pd / f"{cid}.png").is_file()
 
-    total = len(ids)
-    n_posted = sum(1 for i in ids if i in posted)
-    unposted = [i for i in ids if i not in posted]
-    n_png = sum(1 for i in ids if has_png(i))
-    unposted_ready = [i for i in unposted if has_png(i)]
-    unposted_blocked = [i for i in unposted if not has_png(i)]
+    seen: set[str] = set()   # for the combined-unique total across sources
+    # Report EVERY source declared in the product config, not just the primary.
+    for n, ds in enumerate(tier.sources, 1):
+        tag = "  [primary — poster uses this]" if n == 1 else ""
+        print(f"  source {n}: {_src_label(ds)}{tag}")
+        try:
+            ids = _ids_for(ds, tier)
+        except Exception as e:  # noqa: BLE001 — one bad source shouldn't hide the rest
+            print(f"    source error: {e}")
+            continue
+        seen.update(ids)
+        if not ids:
+            _row("catalysts", 0)
+            continue
 
-    _row("catalysts in source", total)
-    _row("posted", n_posted)
-    _row("unposted", len(unposted))
-    if has_pngs:
-        _row("PNG rendered (total)", n_png)
-        _row("· unposted WITH png", f"{len(unposted_ready)}   (ready to post)")
-        _row("· unposted MISSING png", f"{len(unposted_blocked)}   (waiting on KG render)")
-    else:
-        loc = pd if pd else "no KG_REPO_PATH"
-        _row("PNG rendered", f"n/a — no card-render dir ({loc})")
+        unposted = [i for i in ids if i not in posted]
+        _row("catalysts", len(ids))
+        _row("posted", sum(1 for i in ids if i in posted))
+        _row("unposted", len(unposted))
+        if has_pngs:
+            ready = [i for i in unposted if has_png(i)]
+            blocked = [i for i in unposted if not has_png(i)]
+            _row("PNG rendered", sum(1 for i in ids if has_png(i)))
+            _row("· unposted ready", f"{len(ready)}   (has png)")
+            _row("· unposted blocked", f"{len(blocked)}   (waiting on KG render)")
+        else:
+            blocked = unposted
+            _row("PNG rendered", "n/a — no card-render pipeline for this tier")
+        if show_missing and blocked:
+            head = "unposted, MISSING png" if has_pngs else "unposted (no card PNGs)"
+            print(f"      {head}: {len(blocked)}")
+            for cid in sorted(blocked)[:40]:
+                print(f"        {cid}")
+            if len(blocked) > 40:
+                print(f"        … +{len(blocked) - 40} more")
 
-    if show_missing:
-        # ids blocked on a missing PNG (or, for a no-PNG tier, all unposted)
-        blocked = unposted_blocked if has_pngs else unposted
-        head = "unposted, MISSING png" if has_pngs else "unposted (tier has no card PNGs)"
-        print(f"    {head}: {len(blocked)}")
-        for cid in sorted(blocked)[:40]:
-            print(f"      {cid}")
-        if len(blocked) > 40:
-            print(f"      … +{len(blocked) - 40} more")
+    if len(tier.sources) > 1:
+        _row("combined (unique ids)", f"{len(seen)}   "
+             f"({sum(1 for i in seen if i in posted)} posted)")
 
 
 def main() -> int:
