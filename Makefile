@@ -2,7 +2,7 @@
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
-        ps restart heal heal-check check post post-preview regenerate manual-queue \
+        ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
         worktree-clean _notmain commit push pr ship
@@ -10,7 +10,7 @@
 # ---- typo guard: reject unknown KEY=val on the command line ---------------
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE m
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING m
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -77,6 +77,9 @@ post:           ## Publish posts [OLDEST=1] [CHANNEL=linkedin] [TIER=arboryx.rob
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
+
+post-status:    ## Posted vs available + PNG-rendered per tier [TIER=] [MISSING=1]
+	@python3 bin/post-status.py $(if $(TIER),--tier $(TIER)) $(if $(MISSING),--missing)
 
 # Handle→URN cache tools. The operation is in the target NAME (not a positional
 # word) on purpose: a bare `update` goal would collide with the `make update`
