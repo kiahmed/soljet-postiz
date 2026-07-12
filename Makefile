@@ -94,15 +94,15 @@ scheduler-run:      ## Fire one daily run NOW inside the scheduler (test/manual)
 	docker compose --profile scheduler exec scheduler /app/ops/scheduler/run-daily.sh
 
 # ---- worktree cleanup ----------------------------------------------------
-worktree-clean:     ## Remove a MERGED worktree everywhere (usage: make worktree-clean <name> [FORCE=1])
+worktree-clean:     ## Remove a merged worktree, or (no name) return to main + delete branch (usage: make worktree-clean [<name>] [FORCE=1])
 	@./bin/worktree-clean.sh "$(filter-out $@,$(MAKECMDGOALS))" "FORCE=$(FORCE)"
 
-# Let the worktree name be positional (`make worktree-clean <name>`): turn the
-# trailing name into a no-op goal so make doesn't error on it. Scoped to
-# worktree-clean runs only, so it never masks typos in other targets.
-ifeq (worktree-clean,$(firstword $(MAKECMDGOALS)))
-$(if $(filter-out worktree-clean,$(MAKECMDGOALS)),\
-     $(eval $(filter-out worktree-clean,$(MAKECMDGOALS)):;@:))
+# Let a name be positional (`make worktree-clean <name>`, `make ship <name>`):
+# turn the trailing name into a no-op goal so make doesn't error on it. Scoped
+# to these two targets only, so it never masks typos in other targets.
+ifneq (,$(filter worktree-clean ship,$(firstword $(MAKECMDGOALS))))
+$(if $(filter-out worktree-clean ship,$(MAKECMDGOALS)),\
+     $(eval $(filter-out worktree-clean ship,$(MAKECMDGOALS)):;@:))
 endif
 
 # ---- git workflow (run inside a worktree branch) -------------------------
@@ -111,7 +111,9 @@ _notmain:
 	@test "$$(git rev-parse --abbrev-ref HEAD)" != main \
 	  || { echo "refusing: you're on main — switch to a worktree branch"; exit 1; }
 
-commit push pr ship: _notmain
+# commit/push/pr act on the current branch and refuse on main. `ship` is exempt:
+# with no name it cuts its OWN ship/<stamp> branch from main first.
+commit push pr: _notmain
 
 commit:     ## Stage all + commit (usage: make commit m="message")
 	@test -n "$(m)" || { echo 'usage: make commit m="your message"'; exit 2; }
@@ -123,14 +125,14 @@ push:       ## Push the current branch to origin (sets upstream)
 pr:         ## Open a PR from the current branch (title/body auto-filled from commits)
 	gh pr create --fill --base main --head $$(git rev-parse --abbrev-ref HEAD)
 
-ship:       ## commit + push + open PR in one (usage: make ship m="message")
-	@test -n "$(m)" || { echo 'usage: make ship m="your message"'; exit 2; }
-	git add -A && git commit -m "$(m)"
-	git push -u origin $$(git rev-parse --abbrev-ref HEAD)
-	gh pr create --fill --base main --head $$(git rev-parse --abbrev-ref HEAD)
+ship:       ## Push + open PR; from main cuts ship/<stamp> for you (usage: make ship m="message" | make ship <name>)
+	@./bin/ship.sh "$(filter-out $@,$(MAKECMDGOALS))" "$(m)"
 
 # ---- help ----------------------------------------------------------------
 help:           ## Show this list
 	@echo "Postiz operator targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-	  | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	  | sort | awk 'BEGIN{FS=":.*?## "}{ \
+	      d=$$2; \
+	      gsub(/\[[^]]*\]|<[^>]*>|[A-Za-z_]+="[^"]*"/, "\033[38;5;208m&\033[0m", d); \
+	      printf "  \033[36m%-16s\033[0m %s\n", $$1, d }'

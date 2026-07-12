@@ -10,7 +10,40 @@ set -uo pipefail
 
 NAME="${1:-}"
 FORCE="${2:-}"
-[ -z "$NAME" ] && { echo "usage: make worktree-clean WT=<name> [FORCE=1]"; exit 2; }
+
+# --- no name: "return to main" — the partner of `make ship` -----------------
+# After a ship/<stamp> PR merges, put HEAD back on an up-to-date main and delete
+# the branch you were on. Refuses if the branch isn't merged (unless FORCE=1) or
+# the tree is dirty, so no work is lost.
+if [ -z "$NAME" ]; then
+  cur="$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$cur" = "main" ]; then
+    echo "[return-to-main] already on main — updating"; git pull --ff-only 2>/dev/null || true
+    exit 0
+  fi
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "  ✗ REFUSING: uncommitted changes on $cur — commit or stash first"; exit 1
+  fi
+  git fetch origin --quiet || true
+  if [ "${FORCE#FORCE=}" = "1" ]; then
+    echo "  FORCE set — skipping merged check"
+  elif git merge-base --is-ancestor "$cur" origin/main; then
+    echo "  ✓ $cur is merged into origin/main"
+  else
+    ahead="$(git rev-list --count origin/main.."$cur" 2>/dev/null || echo '?')"
+    echo "  ✗ REFUSING: $cur has $ahead commit(s) not in origin/main."
+    echo "    Merge its PR first (squash-merges look unmerged here — use FORCE=1 then)."
+    exit 1
+  fi
+  git checkout main || exit 1
+  git pull --ff-only 2>/dev/null || true
+  git rev-parse --verify "$cur" >/dev/null 2>&1 && git branch -D "$cur" && echo "  deleted local branch $cur"
+  if git ls-remote --exit-code --heads origin "$cur" >/dev/null 2>&1; then
+    git push origin --delete "$cur" && echo "  deleted remote branch $cur"
+  fi
+  echo "[return-to-main] on $(git rev-parse --abbrev-ref HEAD), up to date."
+  exit 0
+fi
 
 # Always operate from the MAIN working tree, never from inside the target worktree.
 MAIN="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
