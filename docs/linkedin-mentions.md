@@ -39,6 +39,36 @@ Results cache to `data/linkedin_urn_cache.json` (positive forever — org ids ar
 stable; negative for 3 days so a corrected slug re-resolves). X keeps the plain
 `@handle` — the two channels' text already diverges via `channel_parts`.
 
+## Collision guard (wrong same-named org)
+
+The fail-closed miss above can't catch a slug that resolves to the **wrong**
+same-named org — KG once stored `foundation-group-inc` (a 501(c)(3) tax-services
+firm) for a humanoid-robotics "Foundation." It resolved fine; it was just the
+wrong company. So for **collision-prone** entity names we verify the resolved org
+against the card before tagging:
+
+- **Trigger (`_collision_prone`)** — only single bare **common-word** names
+  (`Foundation`, `Figure`, `Bolt`, `Tesla`, `Siemens`). Multi-word names
+  (`Boston Dynamics`), acronyms/all-caps (`NVIDIA`, `UBTECH`), and names with
+  digits are distinctive enough to trust and skip the check entirely.
+- **Check (`_context_confidence`)** — deterministic, no LLM, no extra API (reuses
+  the `description` the finder already returns). Counts distinctive domain terms
+  shared between the org's name+description and the card context (headline +
+  entities + relationship verbs), **excluding the entity's own name** (a common
+  word matches itself). ≥1 shared term → confident (0.9).
+- **Zero overlap is not enough to drop.** A legit brand's About-text often uses
+  different words than a specific card (Tesla's EV blurb vs an "Optimus humanoid"
+  headline). With zero overlap we drop **only** if the org blurb carries an
+  off-domain marker (`_OFF_DOMAIN`: nonprofit / 501(c)(3) / tax / legal / realty /
+  staffing / restaurant / …) → 0.30. Otherwise keep at 0.75.
+- **Threshold 0.7.** Below → drop the tag (logged to stderr with the reason);
+  the rest of the post is unaffected. Better a missing tag than a wrong one.
+
+Net effect: `Foundation → foundation-group-inc` (nonprofit) is dropped; `Tesla`,
+`Siemens`, `Boston Dynamics`, `D-Robotics` are all kept. The guard only fires on
+the clear-cut off-domain mismatch — the class KG's context re-audit can't always
+catch, since a wrong slug still "resolves."
+
 ## The token
 
 The finder needs the LinkedIn app token. We read the **live** token from Postiz's

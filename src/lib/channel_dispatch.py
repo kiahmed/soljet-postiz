@@ -119,14 +119,32 @@ def tier_has_channel_policy(tier) -> bool:
     return bool(getattr(tier, "imagery_policy", None))
 
 
+_ctx_cache: dict[str, str] = {}   # source_id → card context text (for handle guard)
+
+
+def _card_context(card: dict) -> str:
+    """Compact domain-signal text for a card: headline + subtitle + every entity
+    name + relationship verbs. Used to sanity-check a resolved LinkedIn org
+    against what the card is actually about."""
+    bits = [str(card.get("headline") or ""), str(card.get("subtitle") or "")]
+    bits += [str(e.get("name") or "") for e in (card.get("entities") or [])
+             if isinstance(e, dict)]
+    for r in (card.get("relationships") or []):
+        if isinstance(r, dict):
+            bits += [str(r.get("rel") or ""), str(r.get("to") or "")]
+    return " ".join(b for b in bits if b)
+
+
 def _entities_for(tier, source_type: str, source_id: str) -> list:
     """Primary subject entities of the item (relationship-weighted), so @mentions
-    feature the event's actual subject rather than whichever entity is listed first."""
+    feature the event's actual subject rather than whichever entity is listed
+    first. Side effect: memoizes the card's context text for the handle guard."""
     if source_type not in ("cards_json", "firestore_cards") or not tier.sources:
         return []
     try:
         from .composer import primary_entities
         card = build_source(tier.sources[0], tier).get(source_id)
+        _ctx_cache[source_id] = _card_context(card)
         return primary_entities(card)
     except Exception:  # noqa: BLE001
         return []
@@ -142,7 +160,7 @@ def _tier_cfg(tier, key: str, default: str) -> str:
     return default
 
 
-def entity_tags(tier, label: str, entities: list) -> list[str]:
+def entity_tags(tier, label: str, entities: list, *, context: str = "") -> list[str]:
     """Per-channel tags for the subject entities, per ENTITY_TAG_MODE:
     prefer_handle (default) | handle_only | cashtag_only | both.
       - @handle: resolved via handles.resolve_handle (card-embedded → endpoint →
@@ -169,7 +187,8 @@ def entity_tags(tier, label: str, entities: list) -> list[str]:
         # no URN → drop the tag (never emit a broken/dead mention). X keeps @slug.
         if h and label.lower() == "linkedin":
             from .linkedin_urn import to_mention
-            h = to_mention(h, e.get("name") if isinstance(e, dict) else None)
+            ename = e.get("name") if isinstance(e, dict) else None
+            h = to_mention(h, ename, context=context, entity_name=ename)
         ticker = e.get("ticker") if isinstance(e, dict) else None
         # Cashtags only work for US-style ALPHA tickers ($NVDA, $SHA). Skip
         # numeric/foreign codes like FANUC's TSE 6954 → "$6954" is meaningless.
@@ -199,7 +218,8 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
     the subject-entity lookup across channels."""
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
-    tags = entity_tags(tier, label, entities_cache) if entities_cache else []
+    ctx = _ctx_cache.get(source_id, "")
+    tags = entity_tags(tier, label, entities_cache, context=ctx) if entities_cache else []
     if not tags or not parts:
         return parts, entities_cache
     tag_str = " ".join(tags)
