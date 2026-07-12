@@ -1,4 +1,4 @@
-# Product pipeline — set up, post, and automate a SolutionJet product
+# Operating manual — set up, post, and automate a SolutionJet product
 
 **Living document.** This is the canonical guide for adding a product to the
 publisher and operating it — by hand from a laptop and on autopilot in the
