@@ -8,6 +8,7 @@ Flow:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import datetime, timezone
@@ -34,7 +35,136 @@ def _when_phrase(date_str) -> str | None:
     return f"{bucket} {d.strftime('%B')}"
 
 
-def _temporal_frame(text: str, date_str, *, kind: str = "card") -> tuple[str, str]:
+# --------------------------------------------------------- relationship hooks
+# The forward hook (the line before the deep link) is keyed to the card's
+# STRONGEST relationship, so a funding card and a rivalry card don't close with
+# the same sentence.
+#
+# Deliberately ENTITY-FREE. An earlier build named the entities ("X backed Y")
+# and an adversarial pass over all 255 live cards found it asserting things the
+# data doesn't support: direction inverted against the edge's own `mechanism`
+# (UBTECH "built on" its own product), pending deals in the past tense
+# ("Onconetix took in Realbotix" — mechanism says "in the process of
+# acquiring"), a real startup named off a generic noun ("Japan Airlines is
+# trialling Humanoid" from the words "humanoid robots"), and subsidiaries
+# swapped for parents. The KG has no deal-completion field and `evidence_type`
+# means "reported", not "closed", so those are not fixable by tightening a gate.
+# Naming nobody makes that entire class structurally impossible: the hook points
+# at the card's graph instead of asserting who did what to whom. It also drops
+# the body-mention gate that was suppressing ~31% of cards, so coverage is high
+# instead of ~30%.
+#
+# Each entry: (plain, hedged). Variants are indexed by a stable hash of the
+# source id so a backlog run doesn't repeat one line — same card always yields
+# the same hook.
+_REL_HOOKS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "invests_in": (("Follow the money here ↓", "Who's backing this ↓",
+                    "The funding trail on this ↓"),
+                   ("How we read the money here ↓",)),
+    "acquires": (("The deal behind this ↓", "See who's consolidating ↓",
+                  "The M&A angle here ↓"),
+                 ("How we read the deal here ↓",)),
+    "partners_with": (("See who's teaming up ↓", "The alliance behind this ↓",
+                       "Who's joining forces here ↓"),
+                      ("How we read the tie-up ↓",)),
+    "supplies": (("The supply chain behind this ↓", "See who feeds this stack ↓",
+                  "Who's supplying whom here ↓"),
+                 ("How we read the supply link ↓",)),
+    "deploys": (("See where this is running ↓", "Who's putting it to work ↓",
+                 "The deployment picture here ↓"),
+                ("How we read the rollout ↓",)),
+    "pilots": (("See what's being trialled ↓", "The pilot picture here ↓",
+                "Who's testing what ↓"),
+               ("How we read the trial ↓",)),
+    "built_on": (("See what this is built on ↓", "The stack underneath ↓",
+                  "What this stands on ↓"),
+                 ("How we read the dependency ↓",)),
+    "integrates_with": (("See what's plugging together ↓", "The integration picture ↓",
+                         "What's converging here ↓"),
+                        ("How we read the integration ↓",)),
+    "competes_with": (("See who's up against whom ↓", "The competitive picture here ↓",
+                       "Who's fighting for this ↓"),
+                      ("How we read the rivalry ↓",)),
+    "displaces": (("See what's being displaced ↓", "Who's losing ground here ↓",
+                   "The displacement angle ↓"),
+                  ("How we read the pressure ↓",)),
+    "benchmarks_against": (("See how they measure up ↓", "The benchmark picture ↓",
+                            "Who leads on the numbers ↓"),
+                           ("How we read the comparison ↓",)),
+    "spins_out_from": (("See where this came from ↓", "The spin-out story here ↓",
+                        "Tracing its origins ↓"),
+                       ("How we read the split ↓",)),
+    "regulates": (("The regulatory angle here ↓", "See who sets the rules ↓",
+                   "Where policy bites here ↓"),
+                  ("How we read the policy angle ↓",)),
+    "hires_from": (("See where the talent's moving ↓", "The talent flow here ↓",
+                    "Who's hiring from whom ↓"),
+                   ("How we read the talent move ↓",)),
+}
+# 'direct'/'web_grounded' state it plainly; 'inferred'/'speculative' are OUR
+# reading of a signal, so they take the hedged column. Rank orders the tie-break
+# (better-evidenced edge wins at equal confidence).
+_EVIDENCE_RANK = {"direct": 0, "web_grounded": 1, "inferred": 2, "speculative": 3}
+_HEDGED_EVIDENCE = {"inferred", "speculative"}
+
+
+def _num(x) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _top_relationship(card: dict) -> dict | None:
+    """The card's strongest relationship, or None. Ranked by confidence, then
+    unflagged first, then evidence quality, then impact — ending in the list
+    index so ties break identically on every run."""
+    rels = card.get("relationships")
+    if not isinstance(rels, list):
+        return None
+    ranked = []
+    for i, r in enumerate(rels):
+        if not isinstance(r, dict) or r.get("rel") not in _REL_HOOKS:
+            continue
+        if str(r.get("status", "active")) != "active":
+            continue
+        ev = str(r.get("evidence_type") or "")
+        if ev not in _EVIDENCE_RANK:
+            continue
+        ranked.append((
+            -round(_num(r.get("confidence")), 4),
+            1 if r.get("flagged") is True else 0,   # prefer unflagged
+            _EVIDENCE_RANK[ev],
+            -round(_num(r.get("impact_magnitude")) * _num(r.get("mechanism_strength")), 4),
+            i, r))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda t: t[:5])
+    return ranked[0][5]
+
+
+def _relationship_hook(card: dict | None, source_id: str = "") -> str | None:
+    """Entity-free hook for the card's strongest relationship, or None to fall
+    back to the generic hook. Never raises — a hook is cosmetic."""
+    if not isinstance(card, dict):
+        return None
+    try:
+        rel = _top_relationship(card)
+        if rel is None:
+            return None
+        plain, hedged = _REL_HOOKS[rel["rel"]]
+        pool = hedged if str(rel.get("evidence_type")) in _HEDGED_EVIDENCE else plain
+        if not pool:
+            return None
+        # stable per-card variant choice — deterministic, spreads a backlog run
+        idx = int(hashlib.sha1(str(source_id).encode()).hexdigest()[:8], 16) % len(pool)
+        return pool[idx]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _temporal_frame(text: str, date_str, *, kind: str = "card",
+                    card: dict | None = None, source_id: str = "") -> tuple[str, str]:
     """Deterministic temporal framing shared by both composers. Items older than
     a week open with a 'Back in <when>:' lead-in (so they read as context, not
     filler); returns (lead-in-prefixed text, forward hook to place before the link).
@@ -51,11 +181,13 @@ def _temporal_frame(text: str, date_str, *, kind: str = "card") -> tuple[str, st
         if when:
             text = f"Back in {when}: {text}"
     if kind == "finding":
+        # Parent tier: a plain entry page, no graph to visualise — stays generic.
         hook = ("See what else is moving in the space ↓" if recent
                 else "See what's followed in the space since ↓")
     else:
-        hook = ("Following how this unfolds ↓" if recent
-                else "How it's played out since — tracking it ↓")
+        hook = _relationship_hook(card, source_id) or (
+            "Following how this unfolds ↓" if recent
+            else "How it's played out since — tracking it ↓")
     return text, hook
 
 
@@ -249,6 +381,8 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
 
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
 
-    text, hook = _temporal_frame(text, catalyst.get("date"))
+    text, hook = _temporal_frame(
+        text, catalyst.get("date"), card=catalyst,
+        source_id=str(catalyst.get("card_id") or catalyst.get("id") or ""))
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"
