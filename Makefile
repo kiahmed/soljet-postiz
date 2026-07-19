@@ -10,7 +10,7 @@
 # ---- typo guard: reject unknown KEY=val on the command line ---------------
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING m
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY m
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -64,7 +64,7 @@ check:          ## Daily poster's view: worker pollers + each tier's channels
 #   OLDEST=1               oldest unposted entry instead of newest
 #   CHANNEL=linkedin|x     one channel only (default: all the tier's channels)
 #   TIER=arboryx.robotics  one tier only (default: all enabled tiers)
-_POSTOPTS = $(if $(OLDEST),--oldest) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
+_POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
 
 post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
 	python3 bin/daily.py $(_POSTOPTS)
@@ -72,7 +72,7 @@ post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
 regenerate:     ## Re-compose + re-stage (discard staged), no publish [OLDEST=1] [CHANNEL=] [TIER=]
 	python3 bin/daily.py --regenerate $(_POSTOPTS)
 
-post:           ## Publish posts [OLDEST=1] [CHANNEL=linkedin] [TIER=arboryx.robotics]
+post:           ## Publish posts [OLDEST=1] [COUNT=n] [DELAY=secs] [READY=1] [CHANNEL=] [TIER=]
 	python3 bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)

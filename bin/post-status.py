@@ -31,29 +31,11 @@ sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve
 
 from _common import build_source, load_dotenv  # noqa: E402
 from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier  # noqa: E402
+from src.lib.card_images import png_dir as _png_dir  # noqa: E402
 from src.lib.posted_log import posted_ids_for  # noqa: E402
 
 _SINCE = datetime(2015, 1, 1)   # "everything"
 _LIMIT = 100000
-
-
-def _png_dir(tier) -> Path | None:
-    """KG render dir for this tier, or None if it has no card-render pipeline.
-
-    A tier with no KG_REPO_PATH (e.g. the parent, which posts entry links) has no
-    card PNGs → None, ALWAYS (the KG_CARD_IMAGES_DIR override never applies to it,
-    so it can't wrongly borrow another tier's renders). The override only backs up
-    a tier that HAS a pipeline but whose relative path doesn't resolve here (e.g.
-    running from a git worktree — the config's `../` assumes the main checkout)."""
-    kg = tier.raw.get("KG_REPO_PATH")
-    if not kg:
-        return None
-    base = _TIER_DIR_BY_ID.get(tier.id, Path.cwd())
-    resolved = (base / kg / "data" / "exports" / "card_images").resolve()
-    if resolved.is_dir():
-        return resolved
-    env = os.getenv("KG_CARD_IMAGES_DIR")
-    return Path(env) if env else resolved  # nonexistent path → reported as n/a
 
 
 def _ids_for(ds, tier) -> list[str]:

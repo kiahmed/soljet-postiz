@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
-from src.lib import content_cache
+from src.lib import card_images, content_cache
 from src.lib.channel_dispatch import (
     channel_label, channel_media, channel_parts, cleanup_attach, deep_link_from_text)
 from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
@@ -163,7 +163,9 @@ def reconcile_pending(tier_id: str) -> None:
 
 # ---------------------------------------------------------------- helpers
 
-def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
+def pick_unposted(tier: Tier, since, *, oldest: bool = False,
+                  ready_only: bool = False,
+                  exclude: set[str] | None = None) -> str | None:
     """Newest (default) or oldest unposted item from the tier's PRIMARY source.
 
     Each tier's DATA_SOURCE_1 is its intended daily feed (arboryx→firestore
@@ -179,7 +181,7 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
         return None
     # in-flight (QUEUE'd, not yet terminal) items count as taken — re-posting
     # them is how duplicates happen once the workers recover.
-    posted = posted_ids_for(tier.id) | pending_ids_for(tier.id)
+    posted = posted_ids_for(tier.id) | pending_ids_for(tier.id) | (exclude or set())
     items: list[dict] = []
     ds = tier.sources[0]
     try:
@@ -191,6 +193,8 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
             sid = str(it.get("id") or it.get("catalyst_id")
                       or it.get("card_id") or it.get("_id") or "")
             if sid and sid not in posted:
+                if ready_only and not card_images.has_render(tier, sid):
+                    continue   # no card PNG yet — would post imageless
                 it["_id"] = sid
                 it["_when"] = str(it.get("timestamp") or it.get("date")
                                   or it.get("created_at") or "")
@@ -228,10 +232,46 @@ def queue_manual(tier: Tier, label: str, parts: list[str], media: list[Path], re
 
 # ---------------------------------------------------------------- per-tier run
 
+
+def run_tier_batch(tier_id: str, *, count: int, delay: int, **kw) -> list[dict]:
+    """Post up to `count` items for a tier, pausing `delay`s between successful
+    cards so we don't hammer the platform APIs (X rate-limits hard).
+
+    Stops early on: nothing left to post, a load error, or a card that stuck in
+    QUEUE — a stall means the workers are down, and piling more posts onto a dead
+    queue just creates a backlog of in-flight items to reconcile later."""
+    out: list[dict] = []
+    seen: set[str] = set()   # advance within the run (preview records nothing)
+    for n in range(1, max(1, count) + 1):
+        if count > 1:
+            print(f"\n--- [{tier_id}] card {n}/{count} ---")
+        r = run_tier(tier_id, exclude=seen, **kw)
+        out.append(r)
+        if r.get('source_id'):
+            seen.add(r['source_id'])
+        status = r.get("status")
+        if status in ("nothing-new", "error", "skipped"):
+            if count > 1 and status == "nothing-new":
+                print(f"[{tier_id}] backlog exhausted after {n - 1} post(s)")
+            break
+        if status == "stuck":
+            print(f"[{tier_id}] STOPPING batch — card {n} stuck in QUEUE "
+                  f"(workers down; remaining cards left for the next run)")
+            break
+        if status == "preview":
+            continue          # nothing published, no need to pace
+        if n < count and delay > 0 and status == "posted":
+            print(f"[{tier_id}] pausing {delay}s before the next card…")
+            time.sleep(delay)
+    return out
+
+
 def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
-             oldest: bool = False, channel: str | None = None) -> dict:
-    """Process one tier. Returns a small summary dict. Never raises."""
-    result = {"tier": tier_id, "status": "skipped", "channels": []}
+             oldest: bool = False, channel: str | None = None,
+             ready_only: bool = False,
+             exclude: set[str] | None = None) -> dict:
+    """Process ONE item for a tier. Returns a small summary dict. Never raises."""
+    result = {"tier": tier_id, "status": "skipped", "channels": [], "source_id": ""}
     try:
         tier = load_tier(tier_id)
     except Exception as e:  # noqa: BLE001
@@ -253,11 +293,14 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         print(f"[{tier_id}] disabled (no channels) — skip")
         return result
 
-    source_id = pick_unposted(tier, since, oldest=oldest)
+    source_id = pick_unposted(tier, since, oldest=oldest, ready_only=ready_only,
+                              exclude=exclude)
     if not source_id:
         print(f"[{tier_id}] nothing new since window — skip")
         result["status"] = "nothing-new"
         return result
+
+    result["source_id"] = source_id
 
     # Reuse staged content if we've already generated this post (preview or a
     # prior run) — so the push publishes exactly what was previewed and never
@@ -412,6 +455,15 @@ def main() -> int:
                    help="pick the OLDEST unposted item instead of the newest "
                         "(walk the backlog forward, e.g. while card images catch up)")
     p.add_argument("--channel", help="publish to ONE channel only (e.g. linkedin, x)")
+    p.add_argument("--count", type=int, default=1,
+                   help="post up to N items per tier this run (default 1). "
+                        "Use to drain a backlog in one go.")
+    p.add_argument("--delay", type=int, default=90,
+                   help="seconds to pause between successful cards when "
+                        "--count > 1 (default 90) — keeps platform APIs happy")
+    p.add_argument("--ready-only", action="store_true",
+                   help="skip cards whose KG card PNG isn't rendered yet "
+                        "(otherwise an attach channel posts with no image)")
     p.add_argument("--no-heal", action="store_true",
                    help="skip the pre-flight worker check/heal before publishing")
     p.add_argument("--check", action="store_true",
@@ -450,9 +502,12 @@ def main() -> int:
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
     tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
-    summaries = [run_tier(t, push=args.push, since=since, regenerate=args.regenerate,
-                          oldest=args.oldest, channel=args.channel)
-                 for t in tiers]
+    summaries = []
+    for t in tiers:
+        summaries.extend(run_tier_batch(
+            t, count=args.count, delay=args.delay, push=args.push, since=since,
+            regenerate=args.regenerate, oldest=args.oldest, channel=args.channel,
+            ready_only=args.ready_only))
 
     print("\n==== summary ====")
     for s in summaries:
