@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from _common import REPO_ROOT, build_source, integration_ids_for, load_dotenv, parse_since
+from src.lib import card_images
 from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier
 from src.lib.posted_log import is_posted, mark_posted
 from src.lib.channel_dispatch import channel_label, channel_media, channel_parts
@@ -191,6 +192,9 @@ def main() -> int:
     p.add_argument("--show", action="store_true",
                    help="open the generated image in the system viewer")
     p.add_argument("--channel", help="publish to ONE channel only (e.g. linkedin, x)")
+    p.add_argument("--allow-unrendered", action="store_true",
+                   help="post a card tier item even if its card PNG is missing "
+                        "(default: refuse — an attach channel would go out imageless)")
     args = p.parse_args()
 
     load_dotenv()
@@ -216,6 +220,12 @@ def run_for_tier(tier, args) -> int:
     if args.recipe == "single":
         if not args.source_id:
             raise SystemExit("--source-id required for --recipe single")
+        if (card_images.requires_render(tier) and not args.allow_unrendered
+                and not card_images.has_render(tier, args.source_id)):
+            raise SystemExit(
+                f"refusing {args.source_id}: card image required but absent "
+                f"({card_images.explain_missing(tier, args.source_id)}). "
+                f"Pass --allow-unrendered to override.")
         bundle = recipe_single(tier, args.source_id)
     elif args.recipe == "narrative":
         if not args.slug:

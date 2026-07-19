@@ -48,3 +48,31 @@ def renders_available(tier) -> bool:
     'no pipeline' apart from 'pipeline exists, this card isn't rendered')."""
     d = png_dir(tier)
     return bool(d and d.is_dir())
+
+
+def requires_render(tier) -> bool:
+    """True if this tier must NOT post a card that has no rendered PNG.
+
+    Keyed on the tier DECLARING a card pipeline (KG_REPO_PATH), not on the
+    render dir existing — so if the KG mount is missing or the path doesn't
+    resolve, we fail CLOSED (post nothing) instead of silently publishing
+    imageless posts to an `attach` channel. Override per tier with
+    REQUIRE_CARD_IMAGE="false" if you ever genuinely want text-only cards."""
+    raw = getattr(tier, "raw", {}) or {}
+    override = str(raw.get("REQUIRE_CARD_IMAGE", "")).strip().lower()
+    if override in ("true", "1", "yes"):
+        return True
+    if override in ("false", "0", "no"):
+        return False
+    return bool(raw.get("KG_REPO_PATH"))   # declares a card pipeline → require it
+
+
+def explain_missing(tier, card_id: str) -> str:
+    """Human-readable reason a card is being skipped, so a missing mount is
+    diagnosable instead of looking like an empty backlog."""
+    d = png_dir(tier)
+    if not d:
+        return "tier declares no KG_REPO_PATH"
+    if not d.is_dir():
+        return f"render dir MISSING at {d} (KG repo not mounted?)"
+    return f"no {card_id}.png in {d}"

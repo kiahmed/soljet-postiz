@@ -182,6 +182,9 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
     # in-flight (QUEUE'd, not yet terminal) items count as taken — re-posting
     # them is how duplicates happen once the workers recover.
     posted = posted_ids_for(tier.id) | pending_ids_for(tier.id) | (exclude or set())
+    # A card tier must never surface an unrendered card: an `attach` channel
+    # would publish it imageless. Not optional — --ready-only only ADDS to this.
+    ready_only = ready_only or card_images.requires_render(tier)
     items: list[dict] = []
     ds = tier.sources[0]
     try:
@@ -296,11 +299,25 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
     source_id = pick_unposted(tier, since, oldest=oldest, ready_only=ready_only,
                               exclude=exclude)
     if not source_id:
+        # Distinguish 'backlog empty' from 'every card filtered out because the
+        # renders are unreachable' — otherwise a broken KG mount looks identical
+        # to having nothing to post, and the daily job goes quiet for days.
+        if card_images.requires_render(tier) and not card_images.renders_available(tier):
+            print(f"[{tier_id}] NOTHING POSTABLE — card renders unreachable: "
+                  f"{card_images.explain_missing(tier, '<any>')}", file=sys.stderr)
         print(f"[{tier_id}] nothing new since window — skip")
         result["status"] = "nothing-new"
         return result
 
     result["source_id"] = source_id
+
+    # Belt-and-braces: refuse to compose a card tier post with no PNG, however
+    # the id was chosen. Composition is skipped entirely, not just the image.
+    if card_images.requires_render(tier) and not card_images.has_render(tier, source_id):
+        print(f"[{tier_id}] {source_id} SKIPPED — card image required but absent "
+              f"({card_images.explain_missing(tier, source_id)})")
+        result["status"] = "nothing-new"
+        return result
 
     # Reuse staged content if we've already generated this post (preview or a
     # prior run) — so the push publishes exactly what was previewed and never
