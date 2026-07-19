@@ -257,6 +257,11 @@ def run_tier_batch(tier_id: str, *, count: int, delay: int, **kw) -> list[dict]:
             if count > 1 and status == "nothing-new":
                 print(f"[{tier_id}] backlog exhausted after {n - 1} post(s)")
             break
+        if status == "throttled":
+            print(f"[{tier_id}] STOPPING batch — Postiz API hourly cap reached "
+                  f"(limit resets on a rolling 1h window; raise API_LIMIT in .env "
+                  f"to lift it). {n - 1} card(s) posted.")
+            break
         if status == "stuck":
             print(f"[{tier_id}] STOPPING batch — card {n} stuck in QUEUE "
                   f"(workers down; remaining cards left for the next run)")
@@ -384,7 +389,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         except Exception as e:  # noqa: BLE001
             print(f"    [warn] upload failed ({m}): {e}", file=sys.stderr)
 
-    any_published = any_stuck = False
+    any_published = any_stuck = any_throttled = False
     attach_cache = None  # memoized attach media, reused across 'attach' channels
     entities_cache = None  # memoized entity list for per-channel @handles
     for iid in iids:
@@ -409,6 +414,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             post_id = res[0]["postId"] if isinstance(res, list) and res else ""
         except Exception as e:  # noqa: BLE001 — isolate one channel's failure
             print(f"    [{label}] push failed: {e}")
+            if "429" in str(e) or "Too Many Requests" in str(e) or "Throttler" in str(e):
+                any_throttled = True   # Postiz's own API cap; every later card will fail too
             queue_manual(tier, label, ch_parts, media_paths, f"Postiz rejected the post: {e}{pol_note}")
             result["channels"].append({"channel": label, "state": "REJECTED"})
             continue
@@ -442,19 +449,30 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         cleanup_attach(attach_cache)
         content_cache.delete(tier.id, source_id)
 
-    # Mark the source handled UNLESS everything was merely stuck (transient infra):
-    # a definitive ERROR won't improve on retry, but a dead-worker QUEUE will,
-    # so leave stuck-only items unposted so the next run picks them up again.
-    if any_published or not any_stuck:
+    # Mark handled ONLY if something actually reached a platform. Anything else
+    # (all channels stuck, throttled, or rejected before Postiz accepted them)
+    # means the card was never published, so it must stay in the backlog.
+    #
+    # This used to read `any_published or not any_stuck`, which marked a card
+    # posted when every channel was REJECTED — a 429 batch silently consumed 9
+    # cards that never went anywhere and could never be retried.
+    if any_published:
         mark_posted(source_type=source_type, source_id=source_id,
                     tier=tier.id, mode="now", text=text,
                     integration_ids=iids,
                     postiz_post_id=",".join(c.get("url", "") for c in result["channels"]),
                     response={"channels": result["channels"]})
         result["status"] = "posted"
-    else:
+    elif any_throttled:
+        print(f"    [{tier_id}] left UNPOSTED — Postiz API rate limit hit "
+              f"(nothing published).")
+        result["status"] = "throttled"
+    elif any_stuck:
         print(f"    [{tier_id}] left UNPOSTED for retry (all channels stuck).")
         result["status"] = "stuck"
+    else:
+        print(f"    [{tier_id}] left UNPOSTED for retry (no channel published).")
+        result["status"] = "failed"
     return result
 
 
