@@ -236,6 +236,76 @@ def queue_manual(tier: Tier, label: str, parts: list[str], media: list[Path], re
 # ---------------------------------------------------------------- per-tier run
 
 
+
+def _parse_duration(s: str) -> int:
+    """'90' | '30m' | '2h' | '1d' -> seconds. Raises SystemExit on garbage."""
+    s = str(s).strip().lower()
+    m = re.fullmatch(r"(\d+)([smhd]?)", s)
+    if not m:
+        raise SystemExit(f"--watch: can't read duration {s!r} (try 45m, 2h, 3600)")
+    n = int(m.group(1))
+    return n * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def _hms(secs: int) -> str:
+    """Compact remaining-time label: 2h5m / 45m / 30s."""
+    h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+    return f"{h}h{m}m" if h else (f"{m}m" if m else f"{s}s")
+
+
+def run_tier_watch(tier_id: str, *, watch_secs: int, poll: int, count: int,
+                   delay: int, **kw) -> list[dict]:
+    """Keep posting for a window, waiting for new ready cards to appear.
+
+    Ad-hoc drain tool, NOT the scheduler: run it while the KG renders a batch of
+    card PNGs and it publishes each one as it becomes postable, then idles until
+    the next appears.
+
+    `count` is a hard ceiling on posts for the whole window — X bills per post,
+    so an unattended loop must not be unbounded. Stops early on throttling or a
+    worker stall, exactly like a batch."""
+    deadline = time.time() + watch_secs
+    out: list[dict] = []
+    skip: set[str] = set()   # cards that failed this session — don't spin on them
+    n = 0
+    while time.time() < deadline:
+        left = int(deadline - time.time())
+        if n >= count:
+            print(f"[{tier_id}] watch: post cap {count} reached — stopping")
+            break
+        r = run_tier(tier_id, exclude=skip, **kw)
+        out.append(r)
+        st, sid = r.get("status"), r.get("source_id") or ""
+        if st == "throttled":
+            print(f"[{tier_id}] watch: STOPPING — Postiz API cap hit "
+                  f"(raise API_LIMIT). {n} posted.")
+            break
+        if st in ("stuck", "error"):
+            print(f"[{tier_id}] watch: STOPPING — {st}. {n} posted.")
+            break
+        if st == "posted":
+            n += 1
+            wait = min(delay, max(0, int(deadline - time.time())))
+            if n < count and wait:
+                print(f"[{tier_id}] watch: {n}/{count} posted, {left//60}m left "
+                      f"— pausing {wait}s")
+                time.sleep(wait)
+            continue
+        if st == "failed" and sid:
+            skip.add(sid)          # move past a card that won't publish
+            continue
+        # nothing-new: idle until a fresh card (or PNG) shows up
+        wait = min(poll, max(0, int(deadline - time.time())))
+        if not wait:
+            break
+        print(f"[{tier_id}] watch: nothing ready — checking again in {wait}s "
+              f"({_hms(left)} left, {n}/{count} posted)")
+        time.sleep(wait)
+    else:
+        print(f"[{tier_id}] watch: window ended. {n} posted.")
+    return out
+
+
 def run_tier_batch(tier_id: str, *, count: int, delay: int, **kw) -> list[dict]:
     """Post up to `count` items for a tier, pausing `delay`s between successful
     cards so we don't hammer the platform APIs (X rate-limits hard).
@@ -499,6 +569,13 @@ def main() -> int:
     p.add_argument("--ready-only", action="store_true",
                    help="skip cards whose KG card PNG isn't rendered yet "
                         "(otherwise an attach channel posts with no image)")
+    p.add_argument("--watch", metavar="DURATION",
+                   help="keep polling for newly-postable cards for this long "
+                        "(45m, 2h, 3600). Requires --push and an explicit "
+                        "--count as a spend ceiling.")
+    p.add_argument("--poll", default="5m", metavar="DURATION",
+                   help="how often to re-check for new cards while idle in "
+                        "--watch (default 5m)")
     p.add_argument("--no-heal", action="store_true",
                    help="skip the pre-flight worker check/heal before publishing")
     p.add_argument("--check", action="store_true",
@@ -537,12 +614,27 @@ def main() -> int:
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
     tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
-    summaries = []
-    for t in tiers:
-        summaries.extend(run_tier_batch(
-            t, count=args.count, delay=args.delay, push=args.push, since=since,
-            regenerate=args.regenerate, oldest=args.oldest, channel=args.channel,
-            ready_only=args.ready_only))
+    if args.watch:
+        if not args.push:
+            raise SystemExit("--watch needs --push (preview would re-show the same card forever)")
+        if args.count <= 1:
+            raise SystemExit("--watch needs an explicit --count as a spend ceiling "
+                             "(X bills per post), e.g. --count 20")
+        watch_secs, poll_secs = _parse_duration(args.watch), _parse_duration(args.poll)
+        summaries = []
+        for t in tiers:
+            summaries.extend(run_tier_watch(
+                t, watch_secs=watch_secs, poll=poll_secs, count=args.count,
+                delay=args.delay, push=args.push, since=since,
+                regenerate=args.regenerate, oldest=args.oldest,
+                channel=args.channel, ready_only=args.ready_only))
+    else:
+        summaries = []
+        for t in tiers:
+            summaries.extend(run_tier_batch(
+                t, count=args.count, delay=args.delay, push=args.push, since=since,
+                regenerate=args.regenerate, oldest=args.oldest,
+                channel=args.channel, ready_only=args.ready_only))
 
     print("\n==== summary ====")
     for s in summaries:
