@@ -9,6 +9,10 @@ products/arboryx.ai/handles.yaml
 *.log
 dev-utils/error.log
 
+# Local dev utilities — rotation scripts (touch live creds) + history backups
+dev-utils/rotate-db-passwords.sh
+dev-utils/*.bundle
+
 # Local scratch notes (session ids, OAuth probe URLs, etc.)
 notes.txt
 

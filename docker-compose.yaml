@@ -109,7 +109,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
+      POSTGRES_PASSWORD: ${TEMPORAL_POSTGRES_PASSWORD}
     expose:
       - "5432"
     networks:
@@ -125,7 +125,7 @@ services:
       - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_USER=temporal
-      - POSTGRES_PWD=temporal
+      - POSTGRES_PWD=${TEMPORAL_POSTGRES_PASSWORD}
       - POSTGRES_SEEDS=temporal-postgresql
       - ENABLE_ES=true
       - ES_SEEDS=temporal-elasticsearch
