@@ -26,6 +26,24 @@ CREATE TABLE IF NOT EXISTS posted (
     response        TEXT,
     PRIMARY KEY (source_type, source_id, tier)
 );
+
+-- Posts handed to Postiz that hadn't reached a terminal state before the poll
+-- timed out (state=QUEUE, typically dead Temporal pollers). They are IN FLIGHT,
+-- not failed: once the workers come back, Temporal publishes them out of band.
+-- Without this, the next run sees the item as unposted and posts it AGAIN —
+-- which is exactly how CRY-031126-001 and ROB-031226-005 got duplicated on
+-- LinkedIn. Reconciled at the start of the next run.
+CREATE TABLE IF NOT EXISTS pending (
+    tier        TEXT NOT NULL,
+    source_id   TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    post_id     TEXT NOT NULL,
+    channel     TEXT,
+    text        TEXT,
+    integration_ids TEXT,
+    queued_at   TEXT NOT NULL,
+    PRIMARY KEY (tier, source_id, post_id)
+);
 """
 
 
@@ -74,6 +92,51 @@ def mark_posted(
                 json.dumps(response) if response else None,
             ),
         )
+
+
+# ------------------------------------------------------------------ in-flight
+def add_pending(*, tier: str, source_id: str, source_type: str, post_id: str,
+                channel: str = "", text: str = "", integration_ids=None) -> None:
+    """Record a post left in QUEUE at poll timeout so the next run can reconcile
+    it instead of re-posting the same item."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO pending (tier, source_id, source_type, "
+            "post_id, channel, text, integration_ids, queued_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (tier, source_id, source_type, post_id, channel, text,
+             json.dumps(list(integration_ids or [])),
+             datetime.now(timezone.utc).isoformat()))
+
+
+def all_pending(tier: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM pending"
+    args: tuple = ()
+    if tier:
+        sql += " WHERE tier=?"
+        args = (tier,)
+    sql += " ORDER BY queued_at"
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        return [dict(r) for r in c.execute(sql, args).fetchall()]
+
+
+def clear_pending(tier: str, source_id: str, post_id: str | None = None) -> None:
+    with _conn() as c:
+        if post_id:
+            c.execute("DELETE FROM pending WHERE tier=? AND source_id=? AND post_id=?",
+                      (tier, source_id, post_id))
+        else:
+            c.execute("DELETE FROM pending WHERE tier=? AND source_id=?",
+                      (tier, source_id))
+
+
+def pending_ids_for(tier: str) -> set[str]:
+    """source_ids still in flight for this tier — the picker must skip these so a
+    queued-but-not-yet-published item is never posted twice."""
+    with _conn() as c:
+        rows = c.execute("SELECT source_id FROM pending WHERE tier=?", (tier,)).fetchall()
+    return {r[0] for r in rows}
 
 
 def posted_ids_for(tier: str) -> set[str]:

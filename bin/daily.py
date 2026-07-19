@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -41,7 +42,8 @@ from src.lib.channel_dispatch import (
     channel_label, channel_media, channel_parts, cleanup_attach, deep_link_from_text)
 from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
 from src.lib.imagery import auto_media
-from src.lib.posted_log import mark_posted, posted_ids_for
+from src.lib import posted_log
+from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
 from src.lib.postiz_client import PostizClient
 from src.lib.recipes import PostBundle, recipe_single
 from src.lib.thread import split_for_thread
@@ -110,6 +112,55 @@ def poll_publish(post_id: str) -> tuple[str, str, str]:
     return state, url, err
 
 
+def heal_workers() -> bool:
+    """Re-register dead Temporal pollers by restarting postiz. Returns True if
+    healthy afterwards. Dead pollers strand posts in QUEUE, and a QUEUE'd post
+    that later publishes out of band is how duplicates happen — so it's worth
+    fixing BEFORE composing anything."""
+    script = REPO_ROOT / "bin" / "heal.sh"
+    if not script.exists():
+        return False
+    try:
+        subprocess.run([str(script)], timeout=300, check=False)
+    except (subprocess.TimeoutExpired, OSError) as e:  # noqa: BLE001
+        print(f"[preflight] heal failed: {e}", file=sys.stderr)
+        return False
+    return workers_alive()
+
+
+def reconcile_pending(tier_id: str) -> None:
+    """Settle posts left in QUEUE by a previous run.
+
+    A timed-out post is IN FLIGHT, not failed: when the workers come back,
+    Temporal publishes that same post with nobody watching. Reconciling first
+    means we record it as posted instead of composing the item again — the exact
+    bug that duplicated CRY-031126-001 and ROB-031226-005 on LinkedIn."""
+    for row in posted_log.all_pending(tier_id):
+        sid, pid = row["source_id"], row["post_id"]
+        r = _psql("SELECT state, coalesce(\"releaseURL\",'') "
+                  f"FROM \"Post\" WHERE id='{pid}';")
+        state = (r.split("\t")[0] if r else "")
+        url = (r.split("\t")[1] if r and "\t" in r else "")
+        if state == "PUBLISHED":
+            try:
+                ids = json.loads(row.get("integration_ids") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            mark_posted(source_type=row["source_type"], source_id=sid,
+                        tier=tier_id, mode="now", text=row.get("text") or "",
+                        integration_ids=ids, postiz_post_id=url,
+                        response={"reconciled": True, "channel": row.get("channel")})
+            posted_log.clear_pending(tier_id, sid, pid)
+            print(f"    [reconciled] {sid} published while we weren't watching "
+                  f"→ marked posted ({url or 'no url'})")
+        elif state in ("ERROR", ""):
+            # Definitive failure, or the row is gone — let it be picked up again.
+            posted_log.clear_pending(tier_id, sid, pid)
+            print(f"    [reconciled] {sid} {state or 'missing'} → cleared, eligible for retry")
+        else:
+            print(f"    [reconciled] {sid} still {state} — leaving in flight (not re-posting)")
+
+
 # ---------------------------------------------------------------- helpers
 
 def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
@@ -126,7 +177,9 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False) -> str | None:
     from _common import build_source  # local import keeps module load cheap
     if not tier.sources:
         return None
-    posted = posted_ids_for(tier.id)
+    # in-flight (QUEUE'd, not yet terminal) items count as taken — re-posting
+    # them is how duplicates happen once the workers recover.
+    posted = posted_ids_for(tier.id) | pending_ids_for(tier.id)
     items: list[dict] = []
     ds = tier.sources[0]
     try:
@@ -185,6 +238,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         print(f"[{tier_id}] load failed: {e}", file=sys.stderr)
         result["status"] = "error"
         return result
+
+    if push:
+        reconcile_pending(tier.id)   # settle in-flight posts BEFORE picking
 
     iids = integration_ids_for(tier)
     if channel:  # restrict to one channel (e.g. --channel linkedin)
@@ -310,6 +366,13 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             any_stuck = True
             print(f"    [{label}] STUCK in QUEUE after {POLL_TIMEOUT}s "
                   f"— worker pollers may be down (restart postiz).")
+            # In flight, NOT failed: once the workers recover Temporal publishes
+            # this very post. Remember it so the next run reconciles instead of
+            # composing a duplicate.
+            if post_id:
+                posted_log.add_pending(
+                    tier=tier.id, source_id=source_id, source_type=source_type,
+                    post_id=post_id, channel=label, text=text, integration_ids=iids)
             queue_manual(tier, label, ch_parts, media_paths,
                          "Stuck in QUEUE — Temporal workers likely down. "
                          f"Run `docker compose restart postiz`, then retry in the Postiz UI.{pol_note}")
@@ -349,6 +412,8 @@ def main() -> int:
                    help="pick the OLDEST unposted item instead of the newest "
                         "(walk the backlog forward, e.g. while card images catch up)")
     p.add_argument("--channel", help="publish to ONE channel only (e.g. linkedin, x)")
+    p.add_argument("--no-heal", action="store_true",
+                   help="skip the pre-flight worker check/heal before publishing")
     p.add_argument("--check", action="store_true",
                    help="health check only (worker pollers + channels), no posting")
     args = p.parse_args()
@@ -367,6 +432,17 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"  {tid:<20} → error: {e}")
         return 0 if alive else 1
+
+    # Pre-flight: dead pollers strand posts in QUEUE, and a QUEUE'd post that
+    # publishes later out of band is how duplicates happen. Fix it BEFORE
+    # composing rather than discovering it at the 120s poll timeout.
+    if args.push and not args.no_heal:
+        if workers_alive():
+            print('[preflight] Temporal workers polling: YES')
+        else:
+            print('[preflight] Temporal workers NOT polling — healing before posting...')
+            print('[preflight] workers healthy' if heal_workers()
+                  else '[preflight] heal did NOT restore pollers — posts may stick in QUEUE')
 
     since = parse_since(args.since)
     if args.push and not workers_alive():
