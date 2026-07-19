@@ -22,6 +22,7 @@ docs/workbench.md
 # Local data — posted-log SQLite + generated imagery cache (per-machine, not shared)
 data/posted_log.sqlite
 data/posted_log.sqlite-journal
+data/*.bak*
 data/imagery_cache/
 data/content_cache/
 data/manual-post-queue.md
