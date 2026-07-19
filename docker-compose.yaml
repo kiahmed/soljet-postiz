@@ -192,6 +192,13 @@ services:
       # host is `host.docker.internal` (not localhost). A real env var here beats
       # .env's localhost value, so each context resolves the right name.
       HANDLE_ENDPOINT_URL: http://host.docker.internal:8084
+      # Daily volume knobs — how many cards the cron publishes per run, how far
+      # apart, and which tier. Set in .env (or here) instead of editing
+      # ops/scheduler/run-daily.sh. X bills ~$0.20/post, so COUNT is a cost dial.
+      # Unset -> run-daily.sh defaults (1 card, 90s, arboryx.robotics).
+      DAILY_POST_COUNT: ${DAILY_POST_COUNT:-}
+      DAILY_POST_DELAY: ${DAILY_POST_DELAY:-}
+      DAILY_POST_TIER: ${DAILY_POST_TIER:-arboryx.robotics}
     volumes:
       - .:/app                                        # repo + .env + data/ (logs, posted-log)
       - /var/run/docker.sock:/var/run/docker.sock     # so daily.py/heal.sh can exec siblings
