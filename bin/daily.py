@@ -165,7 +165,8 @@ def reconcile_pending(tier_id: str) -> None:
 
 def pick_unposted(tier: Tier, since, *, oldest: bool = False,
                   ready_only: bool = False,
-                  exclude: set[str] | None = None) -> str | None:
+                  exclude: set[str] | None = None,
+                  want_channels: set[str] | None = None) -> str | None:
     """Newest (default) or oldest unposted item from the tier's PRIMARY source.
 
     Each tier's DATA_SOURCE_1 is its intended daily feed (arboryx→firestore
@@ -181,7 +182,18 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
         return None
     # in-flight (QUEUE'd, not yet terminal) items count as taken — re-posting
     # them is how duplicates happen once the workers recover.
-    posted = posted_ids_for(tier.id) | pending_ids_for(tier.id) | (exclude or set())
+    # Channel-aware 'done': a card is only finished when every channel we'd post
+    # it to has PUBLISHED. A card whose X failed but LinkedIn succeeded stays
+    # eligible so the missing channel can be filled in later — it used to look
+    # done and was stranded forever.
+    done: set[str] = set()
+    for sid, chans in posted_log.published_channels(tier.id).items():
+        if chans is None:            # pre-channel-tracking row → treat as handled
+            done.add(sid); continue
+        got = {ch for ch, st in chans.items() if st == 'PUBLISHED'}
+        if not want_channels or want_channels <= got:
+            done.add(sid)
+    posted = done | pending_ids_for(tier.id) | (exclude or set())
     # A card tier must never surface an unrendered card: an `attach` channel
     # would publish it imageless. Not optional — --ready-only only ADDS to this.
     ready_only = ready_only or card_images.requires_render(tier)
@@ -371,8 +383,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         print(f"[{tier_id}] disabled (no channels) — skip")
         return result
 
+    want = {channel_label(tier, i) for i in iids}
     source_id = pick_unposted(tier, since, oldest=oldest, ready_only=ready_only,
-                              exclude=exclude)
+                              exclude=exclude, want_channels=want)
     if not source_id:
         # Distinguish 'backlog empty' from 'every card filtered out because the
         # renders are unreachable' — otherwise a broken KG mount looks identical
@@ -460,6 +473,10 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             print(f"    [warn] upload failed ({m}): {e}", file=sys.stderr)
 
     any_published = any_stuck = any_throttled = False
+    # channels this card already got — a retry must not double-post them
+    already_done = posted_log.published_channels_for(tier.id, source_id)
+    if already_done:
+        print(f"    [retry] already published: {', '.join(sorted(already_done))}")
     attach_cache = None  # memoized attach media, reused across 'attach' channels
     entities_cache = None  # memoized entity list for per-channel @handles
     for iid in iids:
@@ -476,6 +493,12 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         policy = tier.imagery_policy.get(label.lower(), "legacy")
         if policy == "attach" and not ch_media:
             print(f"    [{label}] no attach image — degrading to link_card")
+        if label in already_done:
+            print(f"    [{label}] already published for this card — skipping")
+            result["channels"].append({"channel": label, "state": "PUBLISHED",
+                                       "url": "(previously)"})
+            any_published = True
+            continue
         print(f"    [{label}] imagery: {policy} → {len(ch_media)} media")
         pol_note = f" [imagery: {policy}]"
         try:

@@ -63,6 +63,40 @@ def is_posted(source_type: str, source_id: str, tier: str) -> bool:
     return row is not None
 
 
+def _channels_of(response_json: str | None) -> dict[str, str] | None:
+    """{channel: state} from a stored response, or None when the row predates
+    channel recording (treated as 'fully handled' so old rows never re-post)."""
+    try:
+        chans = (json.loads(response_json or "{}") or {}).get("channels")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(chans, list) or not chans:
+        return None
+    return {c.get("channel"): c.get("state") for c in chans
+            if isinstance(c, dict) and c.get("channel")}
+
+
+def published_channels(tier: str) -> dict[str, dict[str, str] | None]:
+    """source_id -> {channel: state} for every recorded card in this tier.
+
+    A card is only truly finished once EVERY channel we'd post it to has
+    PUBLISHED. Without this the log is one row per card, so a card whose X post
+    failed while LinkedIn succeeded looked 'done' and could never be completed."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT source_id, response FROM posted WHERE tier=?", (tier,)).fetchall()
+    return {r[0]: _channels_of(r[1]) for r in rows}
+
+
+def published_channels_for(tier: str, source_id: str) -> set[str]:
+    """Channels that already PUBLISHED for this card — skip re-posting them."""
+    with _conn() as c:
+        row = c.execute("SELECT response FROM posted WHERE tier=? AND source_id=?",
+                        (tier, source_id)).fetchone()
+    st = _channels_of(row[0]) if row else None
+    return {ch for ch, state in (st or {}).items() if state == "PUBLISHED"}
+
+
 def mark_posted(
     *,
     source_type: str,
@@ -74,6 +108,24 @@ def mark_posted(
     postiz_post_id: str | None = None,
     response: dict | None = None,
 ) -> None:
+    # MERGE channel outcomes into any existing row: a retry that only posts the
+    # previously-failed channel must not erase the channel that already worked.
+    if response is not None:
+        with _conn() as c:
+            prev = c.execute("SELECT response FROM posted WHERE tier=? AND source_id=?",
+                             (tier, source_id)).fetchone()
+        old = _channels_of(prev[0]) if prev else None
+        if old:
+            merged = dict(old)
+            for ch in (response.get("channels") or []):
+                if isinstance(ch, dict) and ch.get("channel"):
+                    merged[ch["channel"]] = ch.get("state")
+            new_by_ch = {c.get("channel"): c for c in (response.get("channels") or [])
+                         if isinstance(c, dict)}
+            response = dict(response)
+            response["channels"] = [
+                new_by_ch.get(ch, {"channel": ch, "state": state})
+                for ch, state in merged.items()]
     with _conn() as c:
         c.execute(
             """INSERT OR REPLACE INTO posted
