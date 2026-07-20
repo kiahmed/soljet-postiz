@@ -32,7 +32,9 @@ sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve
 from _common import build_source, load_dotenv  # noqa: E402
 from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier  # noqa: E402
 from src.lib.card_images import png_dir as _png_dir  # noqa: E402
-from src.lib.posted_log import posted_ids_for  # noqa: E402
+from src.lib.posted_log import posted_ids_for, published_channels  # noqa: E402
+from _common import integration_ids_for  # noqa: E402
+from src.lib.channel_dispatch import channel_label  # noqa: E402
 
 _SINCE = datetime(2015, 1, 1)   # "everything"
 _LIMIT = 100000
@@ -71,6 +73,19 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
         return
 
     posted = posted_ids_for(tier.id)
+    # Per-channel state: since posting went channel-specific (X paused on a 403
+    # while LinkedIn kept draining), a single 'posted' total hides that one
+    # channel is far ahead of the other.
+    chan_state = published_channels(tier.id)          # sid -> {channel: state}|None
+    try:
+        channels = [channel_label(tier, i) for i in integration_ids_for(tier)]
+    except Exception:  # noqa: BLE001
+        channels = []
+    def published_on(cid: str, ch: str) -> bool:
+        st = chan_state.get(cid)
+        if st is None:
+            return cid in posted     # pre-channel-tracking row → count as done
+        return st.get(ch) == 'PUBLISHED'
     pd = _png_dir(tier)
     has_pngs = bool(pd and pd.is_dir())
 
@@ -94,14 +109,32 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
 
         unposted = [i for i in ids if i not in posted]
         _row("catalysts", len(ids))
-        _row("posted", sum(1 for i in ids if i in posted))
-        _row("unposted", len(unposted))
+        if channels:
+            done_all = sum(1 for i in ids if all(published_on(i, c) for c in channels))
+            _row("fully done (all chan)", done_all)
+            for ch in channels:
+                got = sum(1 for i in ids if published_on(i, ch))
+                left = len(ids) - got
+                extra = ""
+                if has_pngs:
+                    rdy = sum(1 for i in ids
+                              if not published_on(i, ch) and has_png(i))
+                    extra = f"   ready {rdy}"
+                _row(f"· {ch}", f"posted {got}   todo {left}{extra}")
+        else:
+            _row("posted", sum(1 for i in ids if i in posted))
+            _row("unposted", len(unposted))
         if has_pngs:
             ready = [i for i in unposted if has_png(i)]
             blocked = [i for i in unposted if not has_png(i)]
             _row("PNG rendered", sum(1 for i in ids if has_png(i)))
-            _row("· unposted ready", f"{len(ready)}   (has png)")
-            _row("· unposted blocked", f"{len(blocked)}   (waiting on KG render)")
+            if channels:
+                # per-channel "ready" is already shown above; only the
+                # not-yet-rendered count adds anything here
+                _row("· awaiting KG render", len(blocked))
+            else:
+                _row("· unposted ready", f"{len(ready)}   (has png)")
+                _row("· unposted blocked", f"{len(blocked)}   (waiting on KG render)")
         else:
             blocked = unposted
             _row("PNG rendered", "n/a — no card-render pipeline for this tier")
