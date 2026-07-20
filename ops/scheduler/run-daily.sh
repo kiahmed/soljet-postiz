@@ -25,7 +25,12 @@ envget() {
     | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's/\r$//'
 }
 
-COUNT="${DAILY_POST_COUNT:-$(envget DAILY_POST_COUNT)}"; COUNT="${COUNT:-1}"
+# Positional args win: run-daily.sh <channel> <count>. Lets one script serve
+# several cron lines with different per-channel budgets (LinkedIn is free and
+# capped ~100/24h; X bills ~$0.20/post and blocked at 47 in a day).
+ARG_CHANNEL="${1:-}"
+ARG_COUNT="${2:-}"
+COUNT="${ARG_COUNT:-${DAILY_POST_COUNT:-$(envget DAILY_POST_COUNT)}}"; COUNT="${COUNT:-1}"
 DELAY="${DAILY_POST_DELAY:-$(envget DAILY_POST_DELAY)}"; DELAY="${DELAY:-90}"
 # TIER: unset -> default robotics. Explicitly set-but-empty -> all tiers.
 if [ -n "${DAILY_POST_TIER+x}" ]; then TIER="$DAILY_POST_TIER"
@@ -38,7 +43,11 @@ case "$COUNT" in ''|*[!0-9]*) echo "[warn] DAILY_POST_COUNT='$COUNT' not a numbe
 case "$DELAY" in ''|*[!0-9]*) echo "[warn] DAILY_POST_DELAY='$DELAY' not a number — using 90"; DELAY=90;; esac
 
 echo "===== daily run $(date -u +%FT%TZ) ====="
-echo "[config] COUNT=$COUNT DELAY=${DELAY}s TIER=${TIER:-<all enabled tiers>}  (~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)"
+case "${ARG_CHANNEL:-all}" in
+  linkedin) COSTNOTE="(LinkedIn — free)" ;;
+  *)        COSTNOTE="(~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)" ;;
+esac
+echo "[config] CHANNEL=${ARG_CHANNEL:-<all>} COUNT=$COUNT DELAY=${DELAY}s TIER=${TIER:-<all enabled tiers>}  $COSTNOTE"
 make heal || echo "[warn] heal returned non-zero — continuing; daily.py will flag any stuck posts"
-make post READY=1 COUNT="$COUNT" DELAY="$DELAY" ${TIER:+TIER="$TIER"}
+make post READY=1 COUNT="$COUNT" DELAY="$DELAY" ${TIER:+TIER="$TIER"} ${ARG_CHANNEL:+CHANNEL="$ARG_CHANNEL"}
 echo "===== end     $(date -u +%FT%TZ) ====="

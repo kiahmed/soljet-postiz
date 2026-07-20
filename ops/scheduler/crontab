@@ -1,7 +1,18 @@
 # Postiz daily-poster schedule (supercronic / standard 5-field cron).
-# Times are in the container's TZ — set SCHEDULER_TZ in .env (default UTC).
-# Edit the line below to change when the daily run fires, then:
-#   make scheduler-restart
+# Times are in the container's TZ — set SCHEDULER_TZ in .env (default Etc/GMT+5).
+# After editing:  make scheduler-restart
+#
+# Per-channel budgets, spread through the day. Each fire posts only what is
+# actually ready and stops early when the backlog is empty ("nothing new"), so
+# these lines are safe to leave running until everything is published.
+#
+#   LinkedIn — free, capped ~100 posts/24h by LinkedIn. 4 fires x 12 = 48/day,
+#              comfortably under the cap even with manual runs on top.
+#   X        — ~$0.20/post and it hard-blocked at 47 in one day. 2 fires x 5
+#              = 10/day: cheap, and a third of the level that tripped the block.
+#
+# Raise/lower by editing the trailing number. Args are: <channel> <count>.
 #
 # min hour dom mon dow   command
-0 6 * * *   /app/ops/scheduler/run-daily.sh >> /app/data/daily.log 2>&1
+0  6,11,16,21 * * *   /app/ops/scheduler/run-daily.sh linkedin 12 >> /app/data/daily.log 2>&1
+30 8,20       * * *   /app/ops/scheduler/run-daily.sh x        5  >> /app/data/daily.log 2>&1
