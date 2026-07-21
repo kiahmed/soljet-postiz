@@ -198,25 +198,69 @@ See daily-posting.md §"Posting one by hand" for the `--copy`/`--show` helpers.
 
 ---
 
-## 5. Run on autopilot in the cloud
+## 5. Run on autopilot (local cron or GCP prod)
 
-The daily poster ships as an opt-in Docker service (compose profile
-`scheduler`). It runs `bin/daily.py` on a cron, talking to the other containers.
+The daily poster runs on one of two backends, chosen by `GCP_PROD_SCHEDULER` in
+`.env` (`disabled` = local supercronic container, `enabled` = GCP Cloud
+Scheduler → trigger sidecar). The same targets drive either backend:
 
 ```bash
-make scheduler-up          # build + start the scheduler container
+make scheduler-up          # start (local container, or GCP jobs + trigger)
 make scheduler-run         # fire ONE run now (test) — same as a real daily fire
 make scheduler-logs        # follow it
-make scheduler-restart     # after editing the crontab
-make scheduler-down        # stop + remove
+make scheduler-restart     # re-apply the schedule after editing channels.conf
+make scheduler-down        # stop + remove (local container, or GCP jobs)
 ```
 
-**Schedule** — `ops/scheduler/crontab` (container TZ via `SCHEDULER_TZ` in
-`.env`). Currently fires 06:00 daily:
+### 5.1 Frequency & volume — `ops/scheduler/channels.conf`
+
+Cadence is **config, not setup arguments**. One file holds it all — one row per
+channel (`channel | count | delay | tier | cron`):
+
 ```
-0 6 * * *   /app/ops/scheduler/run-daily.sh >> /app/data/daily.log 2>&1
+linkedin | 5 | 60m | arboryx.robotics | 0 6 * * *
+x        | 5 | 70m | arboryx.robotics | 30 8 * * *
 ```
-Edit the line, then `make scheduler-restart`.
+
+- `count` — cards posted per daily fire (X bills ~$0.20/post: cost dial).
+- `delay` — spacing between cards within a run (`90` secs, or `60m`/`2h`).
+- `cron`  — when the run fires (5-field; TZ = `SCHEDULER_TZ` locally,
+  `GCP_SCHEDULER_TZ` on GCP).
+
+The values are *baked into the backend at apply time*, so **edits only take
+effect after re-applying**:
+- **local** → `make scheduler-restart` regenerates the supercronic crontab
+  (`ops/scheduler/crontab` is a generated, gitignored artifact — never edit it).
+- **GCP** → `make scheduler-up` (or `-restart`) re-upserts the Cloud Scheduler
+  jobs: the row's cron becomes the job's schedule, and count/delay/tier ride in
+  the job's JSON payload to the trigger.
+
+A row for a disabled channel is harmless (daily.py finds no integration and
+no-ops), so you can pre-list a channel and flip its `*_ENABLED` flag later.
+
+### 5.2 Prod setup on GCP (once)
+
+Cloud Scheduler is only the **timer** — the posting logic stays on the machine
+running the stack (it needs docker-exec confirmation, the sqlite posted-log, KG
+card PNGs). Each job POSTs the trigger sidecar through the Cloudflare tunnel.
+
+1. In `.env` set `GCP_PROD_SCHEDULER=enabled`, plus `GCP_SCHEDULER_REGION`,
+   `GCP_SCHEDULER_TZ`, `SCHEDULER_TRIGGER_URL`, `SCHEDULER_TRIGGER_TOKEN`
+   (long random string), `SCHEDULER_TRIGGER_PORT` (see `.env.example`).
+2. `gcloud auth login` + `gcloud config set project <project>` on the machine
+   you run make from (jobs are created via gcloud; the trigger itself needs no
+   gcloud).
+3. Cloudflare dashboard → the tunnel → add an ingress rule routing the
+   `SCHEDULER_TRIGGER_URL` hostname (e.g. `trigger.arboryx.ai`) →
+   `http://postiz-scheduler-trigger:8090`.
+4. `make scheduler-up` — starts the trigger sidecar and creates one Cloud
+   Scheduler job per channels.conf row (`postiz-daily-linkedin`, `postiz-daily-x`).
+5. Verify: `make scheduler-run` fires every job now; `make scheduler-logs`
+   shows Cloud Scheduler's view; the run itself logs to `data/daily.log`.
+
+Dry-run without spending: `DRY=1 ./gcp-scheduler.sh create` prints the exact
+gcloud calls; `SCHEDULER_DRY_RUN=1` makes a fired run echo its resolved
+`make post` line instead of posting. Full design: `docs/scheduler.md`.
 
 **What the scheduler needs** (already wired in `docker-compose.yaml`, confirm
 per environment):
