@@ -35,6 +35,18 @@ envget() {
     | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's/\r$//'
 }
 
+# GCP mode owns the schedule. When GCP_PROD_SCHEDULER=enabled the local cron
+# stands down and lets the Cloud Scheduler -> trigger path drive — no need to
+# tear down this container. The trigger sets SCHED_VIA_TRIGGER=1 so the run it
+# kicks off is exempt from this guard.
+if [ -z "${SCHED_VIA_TRIGGER:-}" ]; then
+  case "$(envget GCP_PROD_SCHEDULER)" in
+    enabled|true|1)
+      echo "===== $(date -u +%FT%TZ) local cron standing down: GCP_PROD_SCHEDULER=enabled (GCP trigger drives) ====="
+      exit 0 ;;
+  esac
+fi
+
 COUNT="${ARG_COUNT:-${DAILY_POST_COUNT:-$(envget DAILY_POST_COUNT)}}"; COUNT="${COUNT:-1}"
 DELAY="${ARG_DELAY:-${DAILY_POST_DELAY:-$(envget DAILY_POST_DELAY)}}"; DELAY="${DELAY:-90}"
 CHANNEL="$ARG_CHANNEL"   # channel is per-run only; no env fallback (all-channels when empty)

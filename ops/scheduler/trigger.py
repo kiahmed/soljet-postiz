@@ -115,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
         subprocess.Popen(
             ["/usr/bin/env", "bash", RUN_DAILY, channel, count, delay, tier],
             cwd=REPO, stdout=logf, stderr=logf, start_new_session=True,
+            # exempt this run from run-daily.sh's "GCP mode -> local stands down"
+            # guard: the trigger IS the GCP path.
+            env={**os.environ, "SCHED_VIA_TRIGGER": "1"},
         )
         return self._reply(202, f"accepted: channel={channel} count={count} delay={delay} tier={tier}")
 
