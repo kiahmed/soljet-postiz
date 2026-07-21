@@ -31,3 +31,6 @@ data/linkedin_urn_cache.json
 # Python
 __pycache__/
 *.pyc
+
+# Generated scheduler crontab (source: ops/scheduler/channels.conf)
+ops/scheduler/crontab

@@ -96,21 +96,24 @@ social-cache-clean:  ## Drop matching entries so they re-resolve (usage: make so
 social-cache-update: ## Re-resolve matching entries live (usage: make social-cache-update <channel> <entity...>)
 	@python3 bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
 
-# ---- docker scheduler (opt-in `scheduler` compose profile) ---------------
-scheduler-up:       ## Build & start the daily scheduler container
-	docker compose --profile scheduler up -d --build scheduler
+# ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
+# Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,
+# enabled=GCP Cloud Scheduler + trigger sidecar). ops/scheduler/scheduler-ctl.sh
+# dispatches; ops/scheduler/channels.conf is the one schedule both backends read.
+scheduler-up:       ## Build & start the daily scheduler (local or GCP per flag)
+	@./ops/scheduler/scheduler-ctl.sh up
 
-scheduler-down:     ## Stop & remove the scheduler container
-	docker compose --profile scheduler rm -sf scheduler
+scheduler-down:     ## Stop & remove the scheduler (local container or GCP jobs)
+	@./ops/scheduler/scheduler-ctl.sh down
 
-scheduler-restart:  ## Restart the scheduler (after editing its crontab)
-	docker compose --profile scheduler restart scheduler
+scheduler-restart:  ## Reload the schedule from channels.conf and restart
+	@./ops/scheduler/scheduler-ctl.sh restart
 
-scheduler-logs:     ## Follow the scheduler container log
-	docker compose --profile scheduler logs -f scheduler
+scheduler-logs:     ## Follow the scheduler log (local container or GCP jobs)
+	@./ops/scheduler/scheduler-ctl.sh logs
 
-scheduler-run:      ## Fire one daily run NOW inside the scheduler (test/manual)
-	docker compose --profile scheduler exec scheduler /app/ops/scheduler/run-daily.sh
+scheduler-run:      ## Fire one daily run NOW (test/manual)
+	@./ops/scheduler/scheduler-ctl.sh run
 
 # ---- worktree cleanup ----------------------------------------------------
 worktree-clean:     ## Remove a merged worktree, or (no name) return to main + delete branch (usage: make worktree-clean [<name>] [FORCE=1])

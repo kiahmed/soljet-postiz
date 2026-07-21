@@ -254,7 +254,7 @@ def _parse_duration(s: str) -> int:
     s = str(s).strip().lower()
     m = re.fullmatch(r"(\d+)([smhd]?)", s)
     if not m:
-        raise SystemExit(f"--watch: can't read duration {s!r} (try 45m, 2h, 3600)")
+        raise SystemExit(f"can't read duration {s!r} (try 45m, 2h, 3600)")
     n = int(m.group(1))
     return n * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
@@ -586,9 +586,10 @@ def main() -> int:
     p.add_argument("--count", type=int, default=1,
                    help="post up to N items per tier this run (default 1). "
                         "Use to drain a backlog in one go.")
-    p.add_argument("--delay", type=int, default=90,
-                   help="seconds to pause between successful cards when "
-                        "--count > 1 (default 90) — keeps platform APIs happy")
+    p.add_argument("--delay", type=_parse_duration, default=90, metavar="DURATION",
+                   help="pause between successful cards when --count > 1 "
+                        "(90, 60m, 2h; bare number = seconds; default 90) — "
+                        "keeps platform APIs happy and spreads posts across the day")
     p.add_argument("--ready-only", action="store_true",
                    help="skip cards whose KG card PNG isn't rendered yet "
                         "(otherwise an attach channel posts with no image)")
