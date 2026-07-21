@@ -5,7 +5,7 @@
 # lives. Cloud Scheduler is only the timer; it cannot run the posting logic.
 #
 # Gated like azure-deploy.sh: refuses unless GCP_PROD_SCHEDULER=enabled in .env.
-# Usage: gcp-scheduler.sh <create|delete|list|run|logs>
+# Usage: gcp-scheduler.sh <create|delete|list|run|logs|show>
 # Set DRY=1 to print the gcloud commands instead of running them (no auth needed).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +14,7 @@ cd "$DIR"
 source "$DIR/ops/scheduler/lib.sh"
 
 CMD="${1:-}"
-[ -n "$CMD" ] || { echo "usage: gcp-scheduler.sh <create|delete|list|run|logs>"; exit 2; }
+[ -n "$CMD" ] || { echo "usage: gcp-scheduler.sh <create|delete|list|run|logs|show>"; exit 2; }
 
 # --- gate + required config (mirrors azure-deploy.sh) ------------------------
 [ -f .env ] || { echo "ERROR: .env not found"; exit 1; }
@@ -57,15 +57,16 @@ job_exists() {
 
 create_jobs() {
   while IFS=$'\t' read -r channel count delay tier cron; do
-    local name body verb; name="$(job_name "$channel")"
+    local name body verb hdr; name="$(job_name "$channel")"
     body="$(printf '{"channel":"%s","count":"%s","delay":"%s","tier":"%s"}' "$channel" "$count" "$delay" "$tier")"
-    if job_exists "$channel"; then verb=update; else verb=create; fi
+    # gcloud quirk: `create http` takes --headers, `update http` takes --update-headers.
+    if job_exists "$channel"; then verb=update; hdr=--update-headers; else verb=create; hdr=--headers; fi
     echo "==> $verb $name  ('$cron' $TZ_)  count=$count delay=$delay tier=$tier"
     gc scheduler jobs "$verb" http "$name" \
       --project="$PROJECT" --location="$REGION" \
       --schedule="$cron" --time-zone="$TZ_" \
       --uri="$TRIGGER_URL" --http-method=POST \
-      --headers="Content-Type=application/json,Authorization=Bearer $TRIGGER_TOKEN" \
+      "$hdr=Content-Type=application/json,Authorization=Bearer $TRIGGER_TOKEN" \
       --message-body="$body" \
       --attempt-deadline=60s
   done < <(sched_rows)
@@ -86,10 +87,30 @@ run_jobs() {
   done < <(sched_rows)
 }
 
+# Print each job's cron + decoded request body (the count/delay/tier that GCP
+# POSTs to the trigger live base64-encoded in the body). Read-only.
+show_jobs() {
+  while IFS=$'\t' read -r channel _c _d _t _cron; do
+    local name; name="$(job_name "$channel")"
+    echo "== $name =="
+    gcloud scheduler jobs describe "$name" --project="$PROJECT" --location="$REGION" --format=json 2>/dev/null \
+      | python3 -c "import sys,json,base64
+try: d=json.load(sys.stdin)
+except Exception: print('  (not found — run make scheduler-up)'); raise SystemExit
+h=d.get('httpTarget',{})
+print('  cron :',d.get('schedule'),d.get('timeZone'))
+print('  state:',d.get('state'))
+print('  uri  :',h.get('uri'))
+b=h.get('body'); print('  body :',base64.b64decode(b).decode() if b else '(none)')" \
+      || echo "  (not found — run make scheduler-up)"
+  done < <(sched_rows)
+}
+
 case "$CMD" in
   create) create_jobs ;;
   delete) delete_jobs ;;
   run)    run_jobs ;;
+  show)   show_jobs ;;
   list)   gc scheduler jobs list --project="$PROJECT" --location="$REGION" ;;
   logs)   gc logging read \
             "resource.type=cloud_scheduler_job AND resource.labels.job_id:postiz-daily-" \

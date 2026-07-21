@@ -4,13 +4,13 @@
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-cache social-cache-list social-cache-clean social-cache-update \
-        scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run \
+        scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         worktree-clean _notmain commit push pr ship
 
 # ---- typo guard: reject unknown KEY=val on the command line ---------------
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -114,6 +114,9 @@ scheduler-logs:     ## Follow the scheduler log (local container or GCP jobs)
 
 scheduler-run:      ## Fire one daily run NOW (test/manual)
 	@./ops/scheduler/scheduler-ctl.sh run
+
+scheduler-show:     ## Show the active schedule (local crontab, or decoded GCP jobs)
+	@./ops/scheduler/scheduler-ctl.sh show
 
 # ---- worktree cleanup ----------------------------------------------------
 worktree-clean:     ## Remove a merged worktree, or (no name) return to main + delete branch (usage: make worktree-clean [<name>] [FORCE=1])

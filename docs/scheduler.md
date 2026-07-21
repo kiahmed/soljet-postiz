@@ -73,16 +73,27 @@ SCHEDULER_TRIGGER_PORT=8090
 
 Then, once:
 1. `gcloud auth login` (and set the project) so `gcp-scheduler.sh` can create jobs.
-2. In the **Cloudflare dashboard**, add a tunnel ingress rule routing
-   `trigger.arboryx.ai` → `http://postiz-scheduler-trigger:8090` (the tunnel is
-   token-managed, so ingress lives in the dashboard, not a repo file). The
-   sidecar is on `postiz-network`, reachable by `cloudflared`.
-3. `make scheduler-up` — builds/starts the trigger sidecar and upserts one Cloud
-   Scheduler job per channel.
+2. `make scheduler-up` — in gcp mode this now, in order:
+   a. builds/starts the trigger sidecar,
+   b. **auto-provisions the Cloudflare route** (`ops/scheduler/cf-provision.sh ensure`):
+      creates the DNS `CNAME trigger.arboryx.ai → <tunnel>.cfargotunnel.com` (proxied)
+      and the tunnel ingress rule → `http://postiz-scheduler-trigger:8090`, via the
+      Cloudflare API token in `auth/cloudflare.yaml`. Idempotent; preserves other
+      ingress rules. Skip with `SKIP_CF_PROVISION=1` to manage the hostname by hand.
+   c. upserts one Cloud Scheduler job per channel.
+   `make scheduler-down` reverses (b) and removes the sidecar + jobs.
 
-Verify without spending: `DRY=1 ./gcp-scheduler.sh create` prints the exact
-`gcloud` calls; `SCHEDULER_DRY_RUN=1` makes the trigger echo the resolved
-`make post` line instead of posting.
+The old manual Cloudflare-dashboard ingress step is no longer needed — step (b)
+does it. The tunnel is token-managed (no repo ingress file), so provisioning goes
+through the CF API; the sidecar is on `postiz-network`, reachable by `cloudflared`.
+
+Verify without spending / mutating:
+- `make scheduler-up DRY=1` prints the whole sequence, runs nothing.
+- `DRY=1 ./ops/scheduler/cf-provision.sh ensure` reads current CF state and prints
+  the writes it *would* make; `./ops/scheduler/cf-provision.sh verify` is read-only
+  (token active? DNS + ingress present?).
+- `DRY=1 ./gcp-scheduler.sh create` prints the exact `gcloud` calls;
+  `SCHEDULER_DRY_RUN=1` makes the trigger echo the resolved `make post` line.
 
 ## Security
 
