@@ -181,6 +181,9 @@ services:
     container_name: postiz-scheduler
     profiles: ["scheduler"]
     restart: unless-stopped
+    # tini as PID 1: supercronic's own reaper fails to fork-exec when it is PID 1
+    # (seen on WSL2), and tini reaps the make/docker children the cron jobs spawn.
+    init: true
     working_dir: /app
     environment:
       TZ: ${SCHEDULER_TZ:-Etc/GMT+5}
@@ -222,6 +225,8 @@ services:
     container_name: postiz-scheduler-trigger
     profiles: ["scheduler-gcp"]
     restart: unless-stopped
+    # tini as PID 1 — reaps the make/docker children run-daily.sh spawns.
+    init: true
     working_dir: /app
     command: ["python3", "/app/ops/scheduler/trigger.py"]
     environment:
