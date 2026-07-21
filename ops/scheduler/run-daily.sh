@@ -62,7 +62,11 @@ if [ "${SCHEDULER_DRY_RUN:-}" = "1" ]; then
 fi
 
 echo "===== daily run $(date -u +%FT%TZ)  channel=${CHANNEL:-<all>} tier=${TIER:-<all>} ====="
-echo "[config] COUNT=$COUNT DELAY=$DELAY  (~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)"
+case "${CHANNEL:-all}" in
+  linkedin) COSTNOTE="(LinkedIn — free)" ;;
+  *)        COSTNOTE="(~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)" ;;
+esac
+echo "[config] COUNT=$COUNT DELAY=$DELAY  $COSTNOTE"
 make heal || echo "[warn] heal returned non-zero — continuing; daily.py will flag any stuck posts"
 make post "${POST_ARGS[@]}"
 echo "===== end     $(date -u +%FT%TZ) ====="
