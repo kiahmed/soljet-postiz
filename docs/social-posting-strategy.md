@@ -27,13 +27,19 @@ original-posts/day account cap** for unverified accounts (May 2026) — which is
 exactly the wall we hit at 47.
 Source: github.com/xai-org/x-algorithm ; docs.x.com/developer-terms/policy
 
-### 2. X: auto-mentioning subject companies violates the Automation Rules — DOCUMENTED
-X's Automation Rules permit automated @mentions **only** when the mentioned
-account "requested or clearly indicated an intent to be contacted." Being the
-*subject* of a post does not qualify; a follower doesn't either. "Spammy or
-duplicative" automated mentions "may result in… removal of your posts from Search
-or the suspension of your app or account." **This is shipped behaviour of ours on
-X and is out of policy.**
+### 2. X: the prohibited pattern is UNSOLICITED BULK mentions, not factual crediting — DOCUMENTED (nuanced)
+The rule's own words: "Automating mentions and replies to reach many users on an
+**unsolicited basis** is an abuse… **Spammy or duplicative** use of mentions… may
+result in enforcement." Read in context, this targets reach-farming (tagging
+accounts that aren't in your story to fish for attention) and harassment
+(continuing to tag someone who asked you to stop) — **not** factually crediting
+the actual participants of a real event. A single relevant @mention of the
+company a news post is genuinely about is a gray area, not the spam pattern. The
+enforcement risk scales with **volume and irrelevance**, not with a tag count.
+So on an "Oracle partnered with Nebius" post, tagging **both** is legitimate —
+they're both subjects, both benefit, it's the citation fabric these platforms run
+on. The guardrail is: tag only the story's genuine subjects, keep volume low and
+spaced, never tag non-participants or individuals.
 Source: help.x.com/en/rules-and-policies/x-automation
 
 ### 3. Individuals: never auto-tag — DOCUMENTED (both platforms)
@@ -71,39 +77,37 @@ support. Also unverifiable: whether LinkedIn cannibalises a page's own rapid-fir
 posts — LinkedIn doesn't open-source its algorithm, so it's absence-of-evidence,
 not a green light.
 
-## Required changes (proposed)
+## Required changes
 
-Ranked by how strongly the evidence backs them.
+Most of this is **config or standing policy, not code** — the composer already
+does the right thing (`primary_entities()` tags the story's relationship-weighted
+*subjects*, capped at `MAX_ENTITY_TAGS=2`, orgs only).
 
-1. **Stop auto-@mentioning on X.** This is the one clear policy violation. Options:
-   (a) drop entity tags on the X variant entirely, or (b) keep them only for
-   companies that follow @arboryx_ai (the one case the rule allows). Simplest is
-   (a). LinkedIn URN mentions can stay — not policy-governed there, though see #4.
-   *Code:* gate `entity_tags`/`HANDLE_INJECTION` per channel — X already composes
-   a separate variant in `channel_dispatch.channel_parts`, so this is a per-label
-   suppression, not a rewrite.
+### Config only (scheduler / crontab)
+1. **Cut and space X cadence.** Author Diversity Scorer + the ~50/day account cap
+   both say low-and-spaced. Target **≤5 X posts/day, ≥1h apart** — never batch.
+   Pure `ops/scheduler/crontab` timing: e.g. 2–3 fires of 2 posts, `DELAY` high.
+   Optional nicety: jitter the spacing so it's not a robotic fixed heartbeat.
+2. **Drop steady-state LinkedIn cadence.** Backlog drain at 12–48/day is a fine
+   one-off; steady state should be a few high-signal posts/day, not dozens (link
+   posts are weak, and mass automated link posting is reportable spam). Also
+   crontab, not code.
 
-2. **Cut and spread X volume.** The Author Diversity Scorer + ~50/day cap both say
-   low-and-spaced. Recommend **≤5 X posts/day, ≥1–2h apart** — never batch.
-   *Code:* the scheduler already supports this (`x 5` split across 08:30/20:30);
-   widen to 2–3 fires of 2–3 posts and keep `DELAY` high. Consider randomised
-   spacing (jitter) so it's not a robotic 90s heartbeat.
+### Standing policy (no change needed — keep as is)
+3. **Keep subject-company @mentions on X and LinkedIn.** Tag the story's genuine
+   subjects (1–2, both parties of a partnership/deal) — this is legitimate
+   crediting, drives discovery + reposts, and is already what the code does. Do
+   NOT drop it or cap to one.
+4. **Never tag individuals.** Entity resolution stays scoped to organisations —
+   no CEO/founder/researcher handles, ever. Already true; keep it true.
+5. **Skip communities/groups.** X Communities is gone; LinkedIn Groups won't pass
+   an automated feed through moderation. Don't build it.
 
-3. **Don't chase LinkedIn volume; drop steady-state cadence.** No documented
-   author-diversity throttle, but link posts are weak and mass automated link
-   posting is reportable. Backlog drain at 12–48/day is fine as a one-off; **steady
-   state should be a few high-signal posts/day**, not dozens.
-
-4. **(Optional) LinkedIn link-in-first-comment.** The common mitigation for the
-   link-format penalty is putting the URL in the first comment, not the body.
-   Directional only — worth an A/B, not a certainty. Non-trivial: needs a
-   follow-up comment API call after the post publishes.
-
-5. **Never add individual tagging.** Keep entity resolution scoped to
-   organisations only. No CEO/founder handles, ever.
-
-6. **Skip communities/groups.** Not worth building — X Communities is gone,
-   LinkedIn Groups won't pass an automated feed through moderation.
+### Optional code experiment (only real code item)
+6. **LinkedIn link-in-first-comment.** The usual mitigation for the weak link
+   format is putting the URL in the first comment, not the body. Directional, not
+   proven — worth an A/B if engagement lags. Needs a follow-up comment API call
+   after the post publishes; non-trivial, defer until there's a reason.
 
 ## What NOT to change
 - Deep links / card images stay — the link-format effect is directional and the
