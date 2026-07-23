@@ -3,7 +3,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
-        social-cache social-cache-list social-cache-clean social-cache-update \
+        social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         worktree-clean _notmain commit push pr ship
 
@@ -80,6 +80,9 @@ manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 
 post-status:    ## Posted vs available + PNG-rendered per tier [TIER=] [MISSING=1]
 	@python3 bin/post-status.py $(if $(TIER),--tier $(TIER)) $(if $(MISSING),--missing)
+
+social-status:  ## Per-channel auth/connection health + last error (Postiz store) [TIER=]
+	@python3 bin/social-status.py $(if $(TIER),--tier $(TIER))
 
 # Handle→URN cache tools. The operation is in the target NAME (not a positional
 # word) on purpose: a bare `update` goal would collide with the `make update`
