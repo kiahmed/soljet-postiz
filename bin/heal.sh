@@ -46,6 +46,19 @@ workers_polling() {
   return 0
 }
 
+
+# Restart a container. `docker compose` needs the compose plugin, which the
+# scheduler container image doesn't have — inside it, fall back to a plain
+# `docker restart <container>` via the mounted socket (same effect for a
+# single service; compose just recreates with config, restart reuses it).
+restart_svc() {  # $1 = compose service name == container_name here
+  if docker compose version >/dev/null 2>&1; then
+    docker compose restart "$1" >/dev/null
+  else
+    docker restart "$1" >/dev/null
+  fi
+}
+
 # ---- 1. Temporal ---------------------------------------------------------
 if temporal_serving; then
   say "Temporal cluster: SERVING"
@@ -53,7 +66,7 @@ else
   say "Temporal cluster: NOT serving"
   if [ "$CHECK_ONLY" -eq 1 ]; then exit 1; fi
   say "restarting temporal..."
-  docker compose restart temporal >/dev/null
+  restart_svc temporal
   for i in $(seq 1 24); do
     sleep 5
     if temporal_serving; then say "Temporal recovered (${i}x5s)"; break; fi
@@ -71,7 +84,7 @@ say "Workers polling: NO — queues without pollers among: ${QUEUES[*]}"
 if [ "$CHECK_ONLY" -eq 1 ]; then exit 1; fi
 
 say "restarting postiz to re-register workers..."
-docker compose restart postiz >/dev/null
+restart_svc postiz
 for i in $(seq 1 24); do   # workers re-bundle in ~1-3 min
   sleep 8
   if workers_polling; then

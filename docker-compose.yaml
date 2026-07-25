@@ -228,7 +228,8 @@ services:
     # tini as PID 1 — reaps the make/docker children run-daily.sh spawns.
     init: true
     working_dir: /app
-    command: ["python3", "/app/ops/scheduler/trigger.py"]
+    # Boot = catch up on fires missed while the host slept, then serve triggers.
+    command: ["bash", "-c", "(/app/ops/scheduler/catch-up.sh gcp >> /app/data/daily.log 2>&1 &); exec python3 /app/ops/scheduler/trigger.py"]
     environment:
       TZ: ${SCHEDULER_TZ:-Etc/GMT+5}
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}

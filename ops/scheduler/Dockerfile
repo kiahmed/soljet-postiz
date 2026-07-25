@@ -25,4 +25,5 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 WORKDIR /app
 # Crontab lives in the bind-mounted repo so you can edit the schedule without
 # rebuilding — just `make scheduler-restart`.
-CMD ["supercronic", "/app/ops/scheduler/crontab"]
+# Boot = catch up on fires missed while the host slept, then run local cron.
+CMD ["bash", "-c", "(/app/ops/scheduler/catch-up.sh local >> /app/data/daily.log 2>&1 &); exec supercronic /app/ops/scheduler/crontab"]
