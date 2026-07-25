@@ -87,7 +87,10 @@ sched_rows | while IFS=$'\t' read -r channel count delay tier cron; do
   if [ "${CATCHUP_DRY:-0}" = "1" ]; then
     log "DRY: would run: run-daily.sh $channel $missed"
   else
-    "$HERE/run-daily.sh" "$channel" "$missed" >> "$REPO_ROOT/data/daily.log" 2>&1
+    # SCHED_VIA_TRIGGER: run-daily stands down in GCP mode without it (that
+    # guard is for the local cron); a catch-up run is as legitimate as a
+    # trigger call, so it bypasses the same way.
+    SCHED_VIA_TRIGGER=1 "$HERE/run-daily.sh" "$channel" "$missed" >> "$REPO_ROOT/data/daily.log" 2>&1
   fi
 done
 log "done"
