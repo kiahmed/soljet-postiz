@@ -7,7 +7,7 @@
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         worktree-clean _notmain commit push pr ship
 
-# ---- typo guard: reject unknown KEY=val on the command line ---------------
+# --- typo guard: reject unknown KEY=val on the command line (not a help section)
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
 KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY
@@ -118,6 +118,17 @@ scheduler-logs:     ## Follow the scheduler log (local container or GCP jobs)
 scheduler-run:      ## Fire one daily run NOW (test/manual)
 	@./ops/scheduler/scheduler-ctl.sh run
 
+social-pause:       ## Pause channel posting everywhere (usage: make social-pause CHANNEL=x[,linkedin])
+	@test -n "$(CHANNEL)" || { echo 'usage: make social-pause CHANNEL=x[,linkedin]'; exit 2; }
+	@./ops/scheduler/pause.sh pause "$(CHANNEL)"
+
+social-resume:      ## Resume a paused channel (usage: make social-resume CHANNEL=x[,linkedin])
+	@test -n "$(CHANNEL)" || { echo 'usage: make social-resume CHANNEL=x[,linkedin]'; exit 2; }
+	@./ops/scheduler/pause.sh resume "$(CHANNEL)"
+
+social-schedule:    ## Show each channel's schedule + paused/active state
+	@./ops/scheduler/pause.sh status
+
 scheduler-show:     ## Show the active schedule (local crontab, or decoded GCP jobs)
 	@./ops/scheduler/scheduler-ctl.sh show
 
@@ -159,10 +170,9 @@ ship:       ## Push + open PR; from main cuts ship/<stamp> for you (usage: make 
 	@./bin/ship.sh "$(filter-out $@,$(MAKECMDGOALS))" "$(m)"
 
 # ---- help ----------------------------------------------------------------
-help:           ## Show this list
-	@echo "Postiz operator targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-	  | sort | awk 'BEGIN{FS=":.*?## "}{ \
-	      d=$$2; \
+help:           ## Show this list, grouped by category
+	@awk 'BEGIN{FS=":.*?## "} \
+	  /^# ---- /{ h=$$0; sub(/^# ---- /,"",h); sub(/ -+$$/,"",h); printf "\n\033[1m%s\033[0m\n", h } \
+	  /^[a-zA-Z0-9_-]+:.*?## /{ d=$$2; \
 	      gsub(/\[[^]]*\]|<[^>]*>|[A-Za-z_]+="[^"]*"/, "\033[38;5;208m&\033[0m", d); \
-	      printf "  \033[36m%-16s\033[0m %s\n", $$1, d }'
+	      printf "  \033[36m%-19s\033[0m %s\n", $$1, d }' $(MAKEFILE_LIST)
