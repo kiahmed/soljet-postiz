@@ -32,12 +32,16 @@ sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve
 from _common import build_source, load_dotenv  # noqa: E402
 from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier  # noqa: E402
 from src.lib.card_images import png_dir as _png_dir  # noqa: E402
+from src.lib.composer import card_confidence  # noqa: E402
 from src.lib.posted_log import posted_ids_for, published_channels  # noqa: E402
 from _common import integration_ids_for  # noqa: E402
 from src.lib.channel_dispatch import channel_label  # noqa: E402
 
 _SINCE = datetime(2015, 1, 1)   # "everything"
 _LIMIT = 100000
+
+
+_CONF_BY_ID: dict[str, float] = {}
 
 
 def _ids_for(ds, tier) -> list[str]:
@@ -48,6 +52,7 @@ def _ids_for(ds, tier) -> list[str]:
                   or it.get("card_id") or it.get("_id") or "")
         if sid:
             out.append(sid)
+            _CONF_BY_ID.setdefault(sid, card_confidence(it))
     return out
 
 
@@ -112,15 +117,27 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
         if channels:
             done_all = sum(1 for i in ids if all(published_on(i, c) for c in channels))
             _row("fully done (all chan)", done_all)
+            try:
+                x_thr = float(str(tier.raw.get("X_MIN_CONFIDENCE", "") or 0) or 0)
+            except ValueError:
+                x_thr = 0.0
             for ch in channels:
                 got = sum(1 for i in ids if published_on(i, ch))
-                left = len(ids) - got
+                todo = [i for i in ids if not published_on(i, ch)]
                 extra = ""
                 if has_pngs:
-                    rdy = sum(1 for i in ids
-                              if not published_on(i, ch) and has_png(i))
-                    extra = f"   ready {rdy}"
-                _row(f"· {ch}", f"posted {got}   todo {left}{extra}")
+                    extra = f"   ready {sum(1 for i in todo if has_png(i))}"
+                if ch == "X" and x_thr:
+                    # X is gated: measure the gap against ELIGIBLE cards only,
+                    # or the todo number forever counts cards X will never post.
+                    elig = [i for i in todo if _CONF_BY_ID.get(i, 0.0) >= x_thr]
+                    below = len(todo) - len(elig)
+                    if has_pngs:
+                        extra = f"   ready {sum(1 for i in elig if has_png(i))}"
+                    _row(f"· {ch}", f"posted {got}   eligible {len(elig)}"
+                                    f"   below-gate {below}{extra}  (gate {x_thr})")
+                else:
+                    _row(f"· {ch}", f"posted {got}   todo {len(todo)}{extra}")
         else:
             _row("posted", sum(1 for i in ids if i in posted))
             _row("unposted", len(unposted))

@@ -143,6 +143,17 @@ def _top_relationship(card: dict) -> dict | None:
     return ranked[0][5]
 
 
+def card_confidence(card: dict) -> float:
+    """The card's conviction score = its top relationship's confidence — the
+    SAME edge that drives the forward hook, so gate/status/composer agree on
+    what a card's headline claim is. 0.0 when there are no usable edges."""
+    rel = _top_relationship(card) if isinstance(card, dict) else None
+    try:
+        return float(rel.get("confidence")) if rel else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _relationship_hook(card: dict | None, source_id: str = "") -> str | None:
     """Entity-free hook for the card's strongest relationship, or None to fall
     back to the generic hook. Never raises — a hook is cosmetic."""

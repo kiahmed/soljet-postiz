@@ -45,6 +45,7 @@ from src.lib.imagery import auto_media
 from src.lib import posted_log
 from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
 from src.lib.postiz_client import PostizClient
+from src.lib.composer import card_confidence
 from src.lib.recipes import PostBundle, recipe_single
 from src.lib.thread import split_for_thread
 
@@ -163,6 +164,16 @@ def reconcile_pending(tier_id: str) -> None:
 
 # ---------------------------------------------------------------- helpers
 
+def _x_min_confidence(tier) -> float:
+    """X_MIN_CONFIDENCE from tier.config ('' = gate off). X posts cost real
+    money and land on a curated channel; LinkedIn takes everything."""
+    raw = str(tier.raw.get("X_MIN_CONFIDENCE", "") or "").strip()
+    try:
+        return float(raw) if raw else 0.0
+    except ValueError:
+        return 0.0
+
+
 def pick_unposted(tier: Tier, since, *, oldest: bool = False,
                   ready_only: bool = False,
                   exclude: set[str] | None = None,
@@ -210,6 +221,12 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
             if sid and sid not in posted:
                 if ready_only and not card_images.has_render(tier, sid):
                     continue   # no card PNG yet — would post imageless
+                # X-only run: skip cards below the conviction gate. A filter,
+                # not a quota — COUNT posts however many pass, maybe zero.
+                if want_channels == {"X"}:
+                    thr = _x_min_confidence(tier)
+                    if thr and card_confidence(it) < thr:
+                        continue
                 it["_id"] = sid
                 it["_when"] = str(it.get("timestamp") or it.get("date")
                                   or it.get("created_at") or "")
@@ -475,6 +492,22 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
     any_published = any_stuck = any_throttled = False
     # channels this card already got — a retry must not double-post them
     already_done = posted_log.published_channels_for(tier.id, source_id)
+    # Manual both-channels run: the picker only gates X-ONLY selection, so a
+    # below-gate card picked for LinkedIn must still skip the X channel here.
+    # Scheduled fires are per-channel and never reach this.
+    x_gate_skip = False
+    thr = _x_min_confidence(tier)
+    if thr and not channel and "X" in {channel_label(tier, i) for i in iids}:
+        try:
+            from _common import build_source
+            card = build_source(tier.sources[0], tier).get(source_id)
+            conf = card_confidence(card)
+            if conf < thr:
+                x_gate_skip = True
+                print(f"    [X] below conviction gate ({conf:.2f} < {thr}) — "
+                      f"LinkedIn only for this card")
+        except Exception:  # noqa: BLE001 — can't score -> don't block the post
+            pass
     if already_done:
         print(f"    [retry] already published: {', '.join(sorted(already_done))}")
     attach_cache = None  # memoized attach media, reused across 'attach' channels
@@ -493,6 +526,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         policy = tier.imagery_policy.get(label.lower(), "legacy")
         if policy == "attach" and not ch_media:
             print(f"    [{label}] no attach image — degrading to link_card")
+        if label == "X" and x_gate_skip:
+            result["channels"].append({"channel": label, "state": "GATED"})
+            continue
         if label in already_done:
             print(f"    [{label}] already published for this card — skipping")
             result["channels"].append({"channel": label, "state": "PUBLISHED",
