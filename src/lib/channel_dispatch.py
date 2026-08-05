@@ -221,7 +221,7 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
     ctx = _ctx_cache.get(source_id, "")
     tags = entity_tags(tier, label, entities_cache, context=ctx) if entities_cache else []
     if not tags or not parts:
-        return parts, entities_cache
+        return reply_link_parts(tier, label, parts), entities_cache
     tag_str = " ".join(tags)
     p0 = parts[0]
     if "\n\n" in p0:                       # after the first paragraph (hashtags)
@@ -229,4 +229,27 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
         p0 = f"{head.rstrip()} {tag_str}\n\n{rest}"
     else:
         p0 = f"{p0.rstrip()} {tag_str}"
-    return [p0] + list(parts[1:]), entities_cache
+    return reply_link_parts(tier, label, [p0] + list(parts[1:])), entities_cache
+
+
+def reply_link_parts(tier, label: str, parts: list[str]) -> list[str]:
+    """X growth pattern: main tweet = native text+image (no URL), deep link goes
+    in a self-reply. External-link posts are X's weakest format; a native image
+    with the link one reply down keeps distribution AND the click path.
+
+    Gated per tier by X_REPLY_LINK="true" and applied to the X channel only.
+    COSTS A SECOND X WRITE (~$0.20) — the reply is its own API call. No-op when
+    the text has no deep link or the post is already a thread."""
+    if label.lower() != "x":
+        return parts
+    if str(_tier_cfg(tier, "X_REPLY_LINK", "false")).lower() != "true":
+        return parts
+    if not parts or len(parts) != 1:
+        return parts
+    link = deep_link_from_text(parts[0])
+    if not link:
+        return parts
+    body = parts[0].replace(link, "").rstrip()
+    if not body:
+        return parts
+    return [body, link]
