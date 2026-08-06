@@ -29,12 +29,23 @@ log() { echo "[catch-up] $*"; }
 # wake-up would double-post. Caller passes its mode: local (supercronic) | gcp.
 MODE="${1:-local}"
 GCP_FLAG="$(sched_envget GCP_PROD_SCHEDULER)"
-if [ "$GCP_FLAG" = "enabled" ] && [ "$MODE" != "gcp" ]; then
-  log "GCP mode active — local container defers catch-up"; exit 0
+# watchdog = the periodic invocation from the scheduler container's cron. It
+# bypasses the backend gate: sleep/wake RESUMES containers without a boot, so
+# boot catch-up never fires after a wake — this is the safety net for that.
+# Exactly one container has cron, so there is exactly one watchdog.
+if [ "$MODE" != "watchdog" ]; then
+  if [ "$GCP_FLAG" = "enabled" ] && [ "$MODE" != "gcp" ]; then
+    log "GCP mode active — local container defers catch-up"; exit 0
+  fi
+  if [ "$GCP_FLAG" != "enabled" ] && [ "$MODE" = "gcp" ]; then
+    log "local mode active — trigger container defers catch-up"; exit 0
+  fi
 fi
-if [ "$GCP_FLAG" != "enabled" ] && [ "$MODE" = "gcp" ]; then
-  log "local mode active — trigger container defers catch-up"; exit 0
-fi
+
+# Never overlap with another catch-up (boot + watchdog racing = double post).
+LOCK="/tmp/postiz-catchup.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then log "another catch-up is running — skipping"; exit 0; fi
 
 NOW="${CATCHUP_NOW:-$(date +%H:%M)}"
 NOW_H="${NOW%%:*}"; NOW_M="${NOW##*:}"

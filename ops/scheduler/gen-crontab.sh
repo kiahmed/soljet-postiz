@@ -19,6 +19,11 @@ OUT="${1:-$DIR/crontab}"
     printf '%s   /app/ops/scheduler/run-daily.sh %s %s %s %s >> /app/data/daily.log 2>&1\n' \
       "$cron" "$channel" "$count" "$delay" "$tier"
   done < <(sched_rows)
+  echo "#"
+  echo "# Watchdog: sleep/wake resumes containers without a boot, so boot-time"
+  echo "# catch-up never fires after a wake. This re-checks every 20 min (minute"
+  echo "# 13/33/53 — off the :00/:30 fire minutes) and posts only the shortfall."
+  echo '13,33,53 * * * *   /app/ops/scheduler/catch-up.sh watchdog >> /app/data/daily.log 2>&1'
 } > "$OUT"
 
 echo "wrote $OUT:" >&2
