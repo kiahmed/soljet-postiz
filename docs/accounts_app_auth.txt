@@ -1,0 +1,9 @@
+'(like we did for @arboryx_ai), the dev portal lets you mint that token directly, skipping the redirect UI — but that only works for accounts under your own developer account, not a separate product's own handle.' - what you mean? i think we post via app on both linkedin and X
+
+Yes, both post through the same shared app — that part's unchanged and true for every account. The distinction is about getting the token in the first place, not about posting.
+
+Concretely, from earlier this session: X's Developer Portal has a "Generate Access Token" button that appears only because that X app was created under/by @arboryx_ai itself — the app's own account gets a free self-service token, no browser consent screen. We used exactly that button for @arboryx_ai.
+
+That button does not appear for any other account — not SolutionJet's X, not a new product's own handle. Those still need the normal path: that account's owner logs in and clicks "Authorize" in the browser (via Postiz's connect flow). LinkedIn never had this shortcut at all — every LinkedIn page we've connected (Arboryx.ai, SolutionJet Inc) went through the real OAuth consent screen.
+
+So: same app for everyone, yes. But a token-mint shortcut only for the one account the app itself belongs to.

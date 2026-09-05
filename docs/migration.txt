@@ -1,0 +1,14 @@
+Revised steps — new machine:
+1. Copy the whole parent folder (all 3 sibling repos: soljet-postiz, catalyst-knowledge-graph, arboryx.ai) — or git clone each fresh, then manually copy over what git doesn't track: .env, data/posted_log.sqlite, and the service-account key (arboryx.ai/dev-utils/service_account.json)
+2. Add to the new machine's ~/.bashrc: export GOOGLE_APPLICATION_CREDENTIALS="<new path to the key file>"
+3. Fix any absolute paths (.env, that export) if the new machine's mount layout differs from WSL's /mnt/c/...
+4. Install Docker + Compose
+5. make deploy
+6. docker compose --profile scheduler-gcp up -d --build scheduler-trigger — not make scheduler-up (that also re-syncs GCP job configs via gcloud, unneeded and requires gcloud auth on the new box)
+7. Nothing to touch on GCP — same tunnel hostname, jobs keep firing, now answered by the new machine
+8. Verify: make heal-check, make post-status, make social-schedule
+
+Bring this (old) machine down — don't use make scheduler-down, it calls gcloud scheduler jobs delete and removes the Cloudflare tunnel route (exactly what you don't want mid-migration):
+docker compose --profile scheduler-gcp stop scheduler-trigger
+make down
+make down is interactive (asks y/N) and only stops containers — no cloud side effects, volumes preserved.
