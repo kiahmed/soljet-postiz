@@ -4,11 +4,15 @@ Revised steps — new machine:
 3. Fix any absolute paths (.env, that export) if the new machine's mount layout differs from WSL's /mnt/c/...
 4. Install Docker + Compose
 5. make deploy
-6. docker compose --profile scheduler-gcp up -d --build scheduler-trigger — not make scheduler-up (that also re-syncs GCP job configs via gcloud, unneeded and requires gcloud auth on the new box)
+6. make tunnel-up — starts cloudflared + the scheduler-trigger listener together (idempotent; do NOT use make scheduler-up, that also re-syncs GCP job configs via gcloud, unneeded and requires gcloud auth on the new box)
 7. Nothing to touch on GCP — same tunnel hostname, jobs keep firing, now answered by the new machine
-8. Verify: make heal-check, make post-status, make social-schedule
+8. Verify: make heal-check, make post-status, make social-schedule, make tunnel-check (containers running + live healthz, local and public)
+
+Note: trigger.arboryx.ai/run is authenticated (Bearer SCHEDULER_TRIGGER_TOKEN, constant-time compare) — confirmed live, no auth/wrong token both get 401. Only /healthz is open, and that's read-only. The token is in .env, copied over in step 1.
 
 Bring this (old) machine down — don't use make scheduler-down, it calls gcloud scheduler jobs delete and removes the Cloudflare tunnel route (exactly what you don't want mid-migration):
-docker compose --profile scheduler-gcp stop scheduler-trigger
-make down
+make tunnel-down    # stops + removes cloudflared and scheduler-trigger together, local only — GCP jobs and the tunnel route are untouched
+make down           # stops the rest (postiz, postgres, redis, temporal stack)
 make down is interactive (asks y/N) and only stops containers — no cloud side effects, volumes preserved.
+
+New: make tunnel-check verifies both pieces end to end (container running + live /healthz, checked both from inside the container and over the public hostname) — run it after tunnel-up on the new machine, and again after tunnel-down on the old one to confirm it's actually offline there.
