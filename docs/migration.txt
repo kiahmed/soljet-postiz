@@ -1,5 +1,12 @@
 Revised steps — new machine:
-1. Copy the whole parent folder (all 3 sibling repos: soljet-postiz, catalyst-knowledge-graph, arboryx.ai) — or git clone each fresh, then manually copy over what git doesn't track: .env, data/posted_log.sqlite, and the service-account key (arboryx.ai/dev-utils/service_account.json)
+1. Copy the whole parent folder (all 3 sibling repos: soljet-postiz, catalyst-knowledge-graph, arboryx.ai) — or git clone each fresh, then manually copy over what git doesn't track:
+     .env                                        (all secrets + the live Postiz/routing ids)
+     data/posted_log.sqlite                      (what has already been posted — see 1b)
+     auth/                                       (cloudflare.yaml: tunnel + CF API tokens; x.yaml: X app keys)
+     products/arboryx.ai/handles.yaml            (live Postiz ids, gitignored)
+     arboryx.ai/dev-utils/service_account.json   (GCP service-account key)
+   Everything above is gitignored on purpose, so a `git clone` gives you NONE of it.
+   Quickest check on the old machine: `git status --ignored --short | grep '^!!'`
 
 1b. ***EXPORT THE POSTIZ DATABASE BEFORE TEARING THE OLD MACHINE DOWN.*** This is
     the one thing a git clone + .env does NOT give you: the Postgres volume holds
