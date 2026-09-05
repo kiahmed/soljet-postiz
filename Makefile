@@ -1,7 +1,7 @@
 # Postiz operator targets. Thin wrappers over the existing *.sh scripts,
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
-.PHONY: help deploy status update down clean clean-stopped clean-deep logs \
+.PHONY: help venv deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
@@ -17,6 +17,20 @@ _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
 $(error unknown option(s): $(_unknown_vars) — valid knobs are: $(KNOWN_VARS). Check spelling (e.g. OLDEST, not OLDERST))
 endif
+
+# --- python interpreter -------------------------------------------------------
+# bin/*.py import the src/ chain (duckdb, pandas, google-cloud-*, openai, Pillow
+# from requirements.txt). Prefer the project venv; fall back to system python3
+# so machines that install the deps system-wide are unaffected. Run `make venv`
+# once on a fresh checkout to create .venv.
+PYTHON := $(shell [ -x .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
+
+venv:           ## Create .venv and install Python deps (run once per checkout)
+	python3 -m venv .venv || python3 -m venv .venv --without-pip
+	.venv/bin/python -m ensurepip --upgrade 2>/dev/null || \
+		curl -sS https://bootstrap.pypa.io/get-pip.py | .venv/bin/python
+	.venv/bin/python -m pip install -U pip
+	.venv/bin/python -m pip install -r requirements.txt
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
@@ -59,7 +73,7 @@ heal-check:     ## Report Temporal+worker health only (no restart); exit 1 if un
 
 # ---- daily posting -------------------------------------------------------
 check:          ## Daily poster's view: worker pollers + each tier's channels
-	python3 bin/daily.py --check
+	$(PYTHON) bin/daily.py --check
 
 # Optional knobs for ALL post targets below:
 #   OLDEST=1               oldest unposted entry instead of newest
@@ -68,37 +82,37 @@ check:          ## Daily poster's view: worker pollers + each tier's channels
 _POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only)$(if $(WATCH), --watch $(WATCH))$(if $(POLL), --poll $(POLL)) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
 
 post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
-	python3 bin/daily.py $(_POSTOPTS)
+	$(PYTHON) bin/daily.py $(_POSTOPTS)
 
 regenerate:     ## Re-compose + re-stage (discard staged), no publish [OLDEST=1] [CHANNEL=] [TIER=]
-	python3 bin/daily.py --regenerate $(_POSTOPTS)
+	$(PYTHON) bin/daily.py --regenerate $(_POSTOPTS)
 
 post:           ## Publish posts [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=] [TIER=]
-	python3 bin/daily.py --push $(_POSTOPTS)
+	$(PYTHON) bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"
 
 post-status:    ## Posted vs available + PNG-rendered per tier [TIER=] [MISSING=1]
-	@python3 bin/post-status.py $(if $(TIER),--tier $(TIER)) $(if $(MISSING),--missing)
+	@$(PYTHON) bin/post-status.py $(if $(TIER),--tier $(TIER)) $(if $(MISSING),--missing)
 
 social-status:  ## Per-channel auth/connection health + last error (Postiz store) [TIER=]
-	@python3 bin/social-status.py $(if $(TIER),--tier $(TIER))
+	@$(PYTHON) bin/social-status.py $(if $(TIER),--tier $(TIER))
 
 # Handle→URN cache tools. The operation is in the target NAME (not a positional
 # word) on purpose: a bare `update` goal would collide with the `make update`
 # stack target. Args are <channel> then a free-form <entity...> (case-insensitive).
 social-cache:        ## Handle→URN cache tools — see social-cache-{list,clean,update}
-	@python3 bin/social-cache.py
+	@$(PYTHON) bin/social-cache.py
 
 social-cache-list:   ## List cached handle→URN entries (usage: make social-cache-list <channel> [entity...])
-	@python3 bin/social-cache.py list $(filter-out $@,$(MAKECMDGOALS))
+	@$(PYTHON) bin/social-cache.py list $(filter-out $@,$(MAKECMDGOALS))
 
 social-cache-clean:  ## Drop matching entries so they re-resolve (usage: make social-cache-clean <channel> <entity...>)
-	@python3 bin/social-cache.py delete $(filter-out $@,$(MAKECMDGOALS))
+	@$(PYTHON) bin/social-cache.py delete $(filter-out $@,$(MAKECMDGOALS))
 
 social-cache-update: ## Re-resolve matching entries live (usage: make social-cache-update <channel> <entity...>)
-	@python3 bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
+	@$(PYTHON) bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,
