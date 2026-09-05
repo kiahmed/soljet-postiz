@@ -26,8 +26,10 @@ Nothing to change on GCP — same tunnel hostname, the jobs just hit the new mac
 Gotchas
 - Never run both machines against the same channels: two posted_log.sqlite files
   diverging = the same catalyst posted twice on live accounts.
-- postiz-import refuses if the target DB already has posts (the dump is --clean
-  --if-exists and would drop them). FORCE=1 to insist.
+- postiz-import drops and recreates the target DB before restoring, so the new
+  machine gets the source's schema exactly (no orphan tables if it was on a
+  different Postiz version). It prints what was there first, and refuses if the
+  target already has posts — FORCE=1 to insist.
 - make down / tunnel-down only stop containers — volumes survive. Only
   `docker compose down -v` destroys the tokens.
 - trigger.arboryx.ai/run needs the Bearer SCHEDULER_TRIGGER_TOKEN (it's in .env).
