@@ -13,16 +13,14 @@ Revised steps — new machine:
     the Integration table = every connected channel and its OAuth access/refresh
     tokens. Without it the new machine comes up with ZERO channels and you have to
     redo the X + LinkedIn OAuth dance by hand (painful — LinkedIn especially).
-      OLD machine (postgres alone is enough, no full stack needed):
-        docker compose up -d postiz-postgres
-        mkdir -p data/postiz_export
-        docker exec postiz-postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-          --clean --if-exists > data/postiz_export/postiz-db-$(date +%Y%m%d).sql
-      Media/avatars (optional, 87M — channels work without it):
-        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD/data/postiz_export":/out \
-          alpine tar czf /out/postiz-uploads.tar.gz -C /v .
-      data/postiz_export/ is gitignored — the dump holds live OAuth tokens, so move it by hand
-      (scp/USB), never commit or email it.
+      OLD machine — one target does all of it (postgres alone is enough; it starts
+      postgres if the stack is already down and stops it again afterwards):
+        make postiz-export              # + UPLOADS=1 for the ~87M of media/avatars
+      Writes to data/postiz_export/: the DB dump AND posted_log.sqlite (taken via
+      the sqlite backup API, not cp, so a mid-write poster can't hand you a torn
+      copy). Prints the Integration/Post/Media counts so you can see it worked.
+      data/postiz_export/ is gitignored — it holds live OAuth tokens, so move it by
+      hand (scp/USB), never commit or email it.
 
       WHAT THE DUMP ALREADY CONTAINS (it is the whole database, not just tokens —
       verified 2026-09-05: 69 tables): Integration (channels + OAuth tokens), Post
@@ -37,30 +35,32 @@ Revised steps — new machine:
       checked live, the volume held 1 key total and not even a Postiz one. Carrying
       stale queue state to a new machine risks ghost/duplicate jobs. Skip it.
 
-      STILL SEPARATE, STILL REQUIRED: data/posted_log.sqlite (385 rows) is the
-      POSTER's own record of which catalysts already went out. It is NOT in the
-      Postiz DB, and it — not Postiz — is what stops the new machine re-posting
-      everything from scratch. Already listed in step 1; do not skip it.
+      posted_log.sqlite (385 rows) is the POSTER's own record of which catalysts
+      already went out. It is NOT in the Postiz DB, and it — not Postiz — is what
+      stops the new machine re-posting everything from scratch. `make postiz-export`
+      now bundles it for you, so step 1's copy of it is belt-and-braces.
 
-1c. IMPORT on the NEW machine, AFTER `make deploy` has created the schema once:
-        docker compose up -d postiz-postgres
-        cat postiz-db-<stamp>.sql | docker exec -i postiz-postgres \
-          psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD":/in \
-          alpine tar xzf /in/postiz-uploads.tar.gz -C /v     # only if you took it
-      Then `make deploy` again / restart postiz and check the UI shows the channels.
-      Verify: docker exec postiz-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-        -c 'SELECT name, "providerIdentifier", "tokenExpiration" FROM "Integration" WHERE "deletedAt" IS NULL;'
-      NOTE: the dump uses --clean --if-exists, so it REPLACES the new machine's
-      (empty) Postiz DB. That's what you want on a fresh box; never run it against
-      an instance that already has channels you care about.
+1c. IMPORT on the NEW machine. Drop data/postiz_export/ in place (or pass FILE=),
+    then:
+        make postiz-import              # + UPLOADS=1 if you exported the media
+        make deploy                     # then check the UI shows the channels
+      No prior `make deploy` needed first — the dump carries the CREATE TABLE
+      statements, so it restores into a bare postgres. With no FILE= it picks the
+      newest postiz-db-*.sql in data/postiz_export/. It prints the restored
+      channels and Post count at the end.
 
-      SPLIT-BRAIN WARNING: once the new machine is live, it starts writing its own
-      Post rows and its own data/posted_log.sqlite. Importing an older dump on top
-      then silently discards whatever it published in between. Pick ONE authoritative
-      machine, and never let both run the scheduler against the same channels — two
-      posted_log.sqlite files diverging means the same catalyst gets posted twice.
-      Before importing, check the target: SELECT count(*) FROM "Post";
+      The two ways this bites, both now guarded by the target itself:
+      - The dump is --clean --if-exists: it DROPS what's there. If the target DB
+        already has posts, postiz-import REFUSES rather than silently discarding
+        whatever that machine published. Override with FORCE=1 only when you are
+        certain that box is being replaced.
+      - It won't overwrite a posted_log.sqlite that is LONGER than the incoming
+        one (again FORCE=1 to insist), and keeps the previous file as a .bak.
+
+      SPLIT-BRAIN, the part no target can save you from: never let both machines
+      run the scheduler against the same channels. Two posted_log.sqlite files
+      diverging means the same catalyst goes out twice, on live accounts. Pick ONE
+      authoritative machine and `make tunnel-down` + `make down` on the other.
 
 1d. Tearing the old machine down does NOT destroy any of this: `make down` and
     `make tunnel-down` only stop containers — the postgres/uploads volumes survive
