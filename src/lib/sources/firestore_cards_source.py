@@ -23,7 +23,8 @@ from .base import Source
 
 class FirestoreCards(Source):
     def __init__(self, gcp_project: str, collection: str, **_):
-        self.client = firestore.Client(project=gcp_project)
+        # Empty (unset ${GCP_PROJECT}) → fall back to the gcloud ADC default project.
+        self.client = firestore.Client(project=gcp_project or None)
         self.collection = collection  # e.g. "CKG-Robotics/catalysts/items"
 
     def _coll(self):

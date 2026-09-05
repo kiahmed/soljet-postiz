@@ -63,7 +63,7 @@ These require live credentials and are not run by CI. Add to `.env`:
 
 ```
 GCP_PROD_SCHEDULER=enabled
-GCP_PROJECT=marketresearch-agents      # already set (Firestore)
+GCP_PROJECT=your-gcp-project-id        # already set (Firestore)
 GCP_SCHEDULER_REGION=us-central1
 GCP_SCHEDULER_TZ=Etc/UTC
 SCHEDULER_TRIGGER_URL=https://trigger.arboryx.ai/run

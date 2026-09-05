@@ -1,4 +1,4 @@
-"""Firestore findings source — reads marketresearch-agents `findings` collection."""
+"""Firestore findings source — reads the `findings` collection (GCP project from config/.env)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,7 +12,8 @@ from .base import Source
 
 class FirestoreFindings(Source):
     def __init__(self, gcp_project: str, collection: str, filter_category: str | None = None, **_):
-        self.client = firestore.Client(project=gcp_project)
+        # Empty (unset ${GCP_PROJECT}) → fall back to the gcloud ADC default project.
+        self.client = firestore.Client(project=gcp_project or None)
         self.collection = collection
         self.filter_category = filter_category
 

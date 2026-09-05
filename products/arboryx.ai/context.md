@@ -29,7 +29,7 @@ When writing posts about Arboryx.ai:
 
 ## Posting purpose (parent tier)
 
-The parent tier publishes **daily market intelligence** drawn from six thematic sectors. Findings are surfaced by autonomous scouts in the sibling project (`../arboryx.ai/`) and persisted to **Firestore** in GCP project `marketresearch-agents`, collection `findings`.
+The parent tier publishes **daily market intelligence** drawn from six thematic sectors. Findings are surfaced by autonomous scouts in the sibling project (`../arboryx.ai/`) and persisted to **Firestore** in the findings GCP project (`GCP_PROJECT` in `.env`), collection `findings`.
 
 Each finding doc has: `finding`, `date`, `source_url`, `category` (one of the six sectors), and analysis fields from the data-engineer / strategist pipeline (`sentiment`, `direct`, `indirect`, `market_dynamics`, `price_levels`, `guidance_play`).
 
@@ -60,7 +60,7 @@ When LinkedIn becomes available, the same drafts fan out there too — parent's 
 
 | Source                                          | What to pull                                                                 |
 | ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| **Firestore (`marketresearch-agents` / `findings`)** | **Parent tier live data** — six-sector findings with sentiment + analysis. Auth via gcloud ADC. |
+| **Firestore (`$GCP_PROJECT` / `findings`)** | **Parent tier live data** — six-sector findings with sentiment + analysis. Auth via gcloud ADC. |
 | `../catalyst-knowledge-graph/data/robotics.duckdb` | **Robotics branch tier-2 KG** — catalysts, entities, relationships. (Ignore `arbor.duckdb` — stale duplicate.) |
 | `../catalyst-knowledge-graph/docs/`             | KG schema, node/relationship types — read by the Robotics branch context. |
 | `../catalyst-knowledge-graph/research/`         | Module working notes for the Robotics branch.                              |
