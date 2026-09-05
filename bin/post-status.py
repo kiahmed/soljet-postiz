@@ -31,7 +31,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve
 
 from _common import build_source, load_dotenv  # noqa: E402
 from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier  # noqa: E402
-from src.lib.card_images import png_dir as _png_dir  # noqa: E402
+from src.lib import card_images  # noqa: E402
 from src.lib.composer import card_confidence  # noqa: E402
 from src.lib.posted_log import posted_ids_for, published_channels  # noqa: E402
 from _common import integration_ids_for  # noqa: E402
@@ -91,11 +91,13 @@ def status_for(tier_id: str, *, show_missing: bool) -> None:
         if st is None:
             return cid in posted     # pre-channel-tracking row → count as done
         return st.get(ch) == 'PUBLISHED'
-    pd = _png_dir(tier)
-    has_pngs = bool(pd and pd.is_dir())
+    # card_images prefers the production GCS bucket over the local dev dir when
+    # both are configured — same source of truth the picker/composer use, so
+    # this report can never disagree with what actually gets posted.
+    has_pngs = card_images.renders_available(tier)
 
     def has_png(cid: str) -> bool:
-        return has_pngs and (pd / f"{cid}.png").is_file()
+        return has_pngs and card_images.has_render(tier, cid)
 
     seen: set[str] = set()   # for the combined-unique total across sources
     # Report EVERY source declared in the product config, not just the primary.

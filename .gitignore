@@ -27,6 +27,7 @@ data/imagery_cache/
 data/content_cache/
 data/manual-post-queue.md
 data/linkedin_urn_cache.json
+data/render_gcs_cache.json
 
 # Python
 __pycache__/
