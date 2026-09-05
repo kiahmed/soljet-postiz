@@ -150,10 +150,10 @@ tunnel-check:   ## Verify both are running AND actually reachable (local + publi
 	@docker ps --filter "name=^postiz-scheduler-trigger$$" --filter status=running -q | grep -q . \
 	  && echo "  scheduler-trigger  running" || echo "  scheduler-trigger  NOT running"
 	@docker exec postiz-scheduler-trigger sh -c \
-	  'curl -s -o /dev/null -w "  local  /healthz    -> HTTP %{http_code}\n" --max-time 5 http://localhost:$${SCHEDULER_TRIGGER_PORT:-8090}/healthz' \
-	  2>/dev/null || echo "  local  /healthz    -> unreachable"
+	  'curl -s -o /dev/null -w "  local  /healthz    -> HTTP %{http_code}\n" --max-time 5 http://localhost:$${SCHEDULER_TRIGGER_PORT:-8090}/healthz || true' \
+	  2>/dev/null || echo "  local  /healthz    -> unreachable (container not running?)"
 	@curl -s -o /dev/null -w "  public /healthz    -> HTTP %{http_code}\n" --max-time 10 \
-	  https://trigger.arboryx.ai/healthz 2>/dev/null || echo "  public /healthz    -> unreachable"
+	  https://trigger.arboryx.ai/healthz || true
 
 tunnel-down:    ## Stop + remove cloudflared and scheduler-trigger (GCP jobs untouched)
 	docker compose --profile scheduler-gcp rm -sf scheduler-trigger
