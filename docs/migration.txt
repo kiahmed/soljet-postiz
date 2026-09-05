@@ -1,5 +1,40 @@
 Revised steps — new machine:
 1. Copy the whole parent folder (all 3 sibling repos: soljet-postiz, catalyst-knowledge-graph, arboryx.ai) — or git clone each fresh, then manually copy over what git doesn't track: .env, data/posted_log.sqlite, and the service-account key (arboryx.ai/dev-utils/service_account.json)
+
+1b. ***EXPORT THE POSTIZ DATABASE BEFORE TEARING THE OLD MACHINE DOWN.*** This is
+    the one thing a git clone + .env does NOT give you: the Postgres volume holds
+    the Integration table = every connected channel and its OAuth access/refresh
+    tokens. Without it the new machine comes up with ZERO channels and you have to
+    redo the X + LinkedIn OAuth dance by hand (painful — LinkedIn especially).
+      OLD machine (postgres alone is enough, no full stack needed):
+        docker compose up -d postiz-postgres
+        mkdir -p auth/migration
+        docker exec postiz-postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+          --clean --if-exists > auth/migration/postiz-db-$(date +%Y%m%d).sql
+      Media/avatars (optional, 87M — channels work without it):
+        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD/auth/migration":/out \
+          alpine tar czf /out/postiz-uploads.tar.gz -C /v .
+      auth/ is gitignored — the dump holds live OAuth tokens, so move it by hand
+      (scp/USB), never commit or email it.
+
+1c. IMPORT on the NEW machine, AFTER `make deploy` has created the schema once:
+        docker compose up -d postiz-postgres
+        cat postiz-db-<stamp>.sql | docker exec -i postiz-postgres \
+          psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD":/in \
+          alpine tar xzf /in/postiz-uploads.tar.gz -C /v     # only if you took it
+      Then `make deploy` again / restart postiz and check the UI shows the channels.
+      Verify: docker exec postiz-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -c 'SELECT name, "providerIdentifier", "tokenExpiration" FROM "Integration" WHERE "deletedAt" IS NULL;'
+      NOTE: the dump uses --clean --if-exists, so it REPLACES the new machine's
+      (empty) Postiz DB. That's what you want on a fresh box; never run it against
+      an instance that already has channels you care about.
+
+1d. Tearing the old machine down does NOT destroy any of this: `make down` and
+    `make tunnel-down` only stop containers — the postgres/uploads volumes survive
+    on disk (docker volume ls | grep soljet-postiz). You can always start postgres
+    alone later and dump it. Only `docker compose down -v` / `docker volume rm`
+    actually deletes the tokens.
 2. Add to the new machine's ~/.bashrc: export GOOGLE_APPLICATION_CREDENTIALS="<new path to the key file>"
 3. Fix any absolute paths (.env, that export) if the new machine's mount layout differs from WSL's /mnt/c/...
 4. Install Docker + Compose
