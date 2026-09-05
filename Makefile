@@ -5,6 +5,7 @@
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
+        tunnel-up tunnel-check tunnel-down \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
@@ -131,6 +132,32 @@ social-schedule:    ## Show each channel's schedule + paused/active state
 
 scheduler-show:     ## Show the active schedule (local crontab, or decoded GCP jobs)
 	@./ops/scheduler/scheduler-ctl.sh show
+
+# ---- tunnel (cloudflared + the GCP scheduler-trigger listener) -----------
+# These two come as a pair in GCP mode: cloudflared exposes trigger.arboryx.ai
+# publicly, scheduler-trigger is the container behind it that actually receives
+# Cloud Scheduler's calls. Local-only — never touches the GCP Cloud Scheduler
+# job definitions or the Cloudflare tunnel route itself (that's scheduler-up/
+# -down, which call gcloud/cf-provision). Use tunnel-down before migrating this
+# stack to another machine; use tunnel-up on the new one.
+tunnel-up:      ## Start cloudflared + the scheduler-trigger listener
+	docker compose up -d cloudflared
+	docker compose --profile scheduler-gcp up -d --build scheduler-trigger
+
+tunnel-check:   ## Verify both are running AND actually reachable (local + public)
+	@docker ps --filter "name=^cloudflared$$" --filter status=running -q | grep -q . \
+	  && echo "  cloudflared        running" || echo "  cloudflared        NOT running"
+	@docker ps --filter "name=^postiz-scheduler-trigger$$" --filter status=running -q | grep -q . \
+	  && echo "  scheduler-trigger  running" || echo "  scheduler-trigger  NOT running"
+	@docker exec postiz-scheduler-trigger sh -c \
+	  'curl -s -o /dev/null -w "  local  /healthz    -> HTTP %{http_code}\n" --max-time 5 http://localhost:$${SCHEDULER_TRIGGER_PORT:-8090}/healthz' \
+	  2>/dev/null || echo "  local  /healthz    -> unreachable"
+	@curl -s -o /dev/null -w "  public /healthz    -> HTTP %{http_code}\n" --max-time 10 \
+	  https://trigger.arboryx.ai/healthz 2>/dev/null || echo "  public /healthz    -> unreachable"
+
+tunnel-down:    ## Stop + remove cloudflared and scheduler-trigger (GCP jobs untouched)
+	docker compose --profile scheduler-gcp rm -sf scheduler-trigger
+	docker compose rm -sf cloudflared
 
 # ---- worktree cleanup ----------------------------------------------------
 worktree-clean:     ## Remove a merged worktree, or (no name) return to main + delete branch (usage: make worktree-clean [<name>] [FORCE=1])
