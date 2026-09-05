@@ -143,23 +143,41 @@ do_import() {
   pg_up
   echo "[postiz-import] $dump"
 
-  # Guard: the dump is --clean --if-exists, so it DROPS what's there. If this
-  # machine has already published, importing an older dump silently discards it.
-  local existing
-  existing="$(count_of Post)"
-  if [ -n "$existing" ] && [ "$existing" != "0" ]; then
-    if [ "$FORCE" != "1" ]; then
-      echo "  ✗ REFUSING: this machine's Postiz DB already has $existing posts."
-      echo "    Importing would DROP them (the dump is --clean --if-exists)."
-      echo "    Two machines posting to the same channels also double-posts."
-      echo "    If you're sure this box should be replaced: make postiz-import FORCE=1"
-      exit 1
-    fi
-    echo "  ! FORCE=1 — replacing an existing DB that has $existing posts"
+  # What's already here? A lift-and-shift target may be empty, may be a half-built
+  # fresh deploy, or may be a machine that has genuinely been posting.
+  local existing_post existing_int
+  existing_post="$(count_of Post)"; : "${existing_post:=}"
+  existing_int="$(count_of Integration)"; : "${existing_int:=}"
+  if [ -z "$existing_post" ]; then
+    echo "  target      empty (no Postiz schema yet)"
+  else
+    echo "  target      Post $existing_post   Integration $existing_int"
   fi
 
-  if ! docker exec -i "$PG_CONTAINER" psql -U "$PGUSER" -d "$PGDB" -q < "$dump" >/dev/null 2>&1; then
-    echo "  ! psql reported errors (DROP ... IF EXISTS on a fresh DB is normally harmless)"
+  # Refuse only when the target has real published history — that's the case where
+  # importing loses something nobody can get back.
+  if [ -n "$existing_post" ] && [ "$existing_post" != "0" ] && [ "$FORCE" != "1" ]; then
+    echo "  ✗ REFUSING: target already has $existing_post posts — importing replaces them."
+    echo "    Two machines posting to the same channels also double-posts."
+    echo "    If this box is being replaced: make postiz-import FORCE=1"
+    exit 1
+  fi
+  [ -n "$existing_post" ] && [ "$existing_post" != "0" ] && \
+    echo "  ! FORCE=1 — replacing a DB that has $existing_post posts"
+
+  # Drop and recreate the database rather than leaning on the dump's
+  # --clean --if-exists: that only drops objects the dump itself contains, so a
+  # target on a different Postiz schema keeps orphan tables and you end up with a
+  # mix of both. A lift-and-shift wants the source's schema exactly.
+  echo "  nuking      DROP DATABASE $PGDB, recreating empty"
+  if ! docker exec "$PG_CONTAINER" psql -U "$PGUSER" -d postgres -q \
+        -c "DROP DATABASE IF EXISTS \"$PGDB\" WITH (FORCE);" \
+        -c "CREATE DATABASE \"$PGDB\" OWNER \"$PGUSER\";" >/dev/null 2>&1; then
+    echo "  ✗ could not recreate $PGDB (is something still connected?)"; exit 1
+  fi
+
+  if ! docker exec -i "$PG_CONTAINER" psql -U "$PGUSER" -d "$PGDB" -q -v ON_ERROR_STOP=1 < "$dump" >/dev/null 2>&1; then
+    echo "  ✗ restore failed — $PGDB is now EMPTY. Re-run with a good dump."; exit 1
   fi
 
   # posted_log: never silently overwrite a longer local history.
