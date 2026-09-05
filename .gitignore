@@ -32,6 +32,7 @@ data/render_gcs_cache.json
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # Generated scheduler crontab (source: ops/scheduler/channels.conf)
 ops/scheduler/crontab
