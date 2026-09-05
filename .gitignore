@@ -29,6 +29,10 @@ data/manual-post-queue.md
 data/linkedin_urn_cache.json
 data/render_gcs_cache.json
 
+# Postiz DB/media export for machine migration — contains LIVE OAuth tokens
+# and the Postiz login hash. Move by hand (scp/USB); never commit.
+data/postiz_export/
+
 # Python
 __pycache__/
 *.pyc

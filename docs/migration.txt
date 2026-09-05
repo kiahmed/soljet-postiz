@@ -8,14 +8,32 @@ Revised steps — new machine:
     redo the X + LinkedIn OAuth dance by hand (painful — LinkedIn especially).
       OLD machine (postgres alone is enough, no full stack needed):
         docker compose up -d postiz-postgres
-        mkdir -p auth/migration
+        mkdir -p data/postiz_export
         docker exec postiz-postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-          --clean --if-exists > auth/migration/postiz-db-$(date +%Y%m%d).sql
+          --clean --if-exists > data/postiz_export/postiz-db-$(date +%Y%m%d).sql
       Media/avatars (optional, 87M — channels work without it):
-        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD/auth/migration":/out \
+        docker run --rm -v soljet-postiz_postiz-uploads:/v -v "$PWD/data/postiz_export":/out \
           alpine tar czf /out/postiz-uploads.tar.gz -C /v .
-      auth/ is gitignored — the dump holds live OAuth tokens, so move it by hand
+      data/postiz_export/ is gitignored — the dump holds live OAuth tokens, so move it by hand
       (scp/USB), never commit or email it.
+
+      WHAT THE DUMP ALREADY CONTAINS (it is the whole database, not just tokens —
+      verified 2026-09-05: 69 tables): Integration (channels + OAuth tokens), Post
+      (775 = the full publish history), Media (498), Notifications, Customer, Organization, and
+      User — i.e. the Postiz LOGIN itself (email + bcrypt hash; bcrypt carries its
+      own salt, so the same email/password works on the new box regardless of .env).
+      `pg_dump -d <db>` covers exactly one database and never includes Postgres'
+      own pg_catalog/information_schema, so "app data only, no system tables" is
+      already what you get. Nothing further to export.
+
+      REDIS: do NOT bother. Postiz uses it as an ephemeral BullMQ queue/cache —
+      checked live, the volume held 1 key total and not even a Postiz one. Carrying
+      stale queue state to a new machine risks ghost/duplicate jobs. Skip it.
+
+      STILL SEPARATE, STILL REQUIRED: data/posted_log.sqlite (385 rows) is the
+      POSTER's own record of which catalysts already went out. It is NOT in the
+      Postiz DB, and it — not Postiz — is what stops the new machine re-posting
+      everything from scratch. Already listed in step 1; do not skip it.
 
 1c. IMPORT on the NEW machine, AFTER `make deploy` has created the schema once:
         docker compose up -d postiz-postgres
@@ -29,6 +47,13 @@ Revised steps — new machine:
       NOTE: the dump uses --clean --if-exists, so it REPLACES the new machine's
       (empty) Postiz DB. That's what you want on a fresh box; never run it against
       an instance that already has channels you care about.
+
+      SPLIT-BRAIN WARNING: once the new machine is live, it starts writing its own
+      Post rows and its own data/posted_log.sqlite. Importing an older dump on top
+      then silently discards whatever it published in between. Pick ONE authoritative
+      machine, and never let both run the scheduler against the same channels — two
+      posted_log.sqlite files diverging means the same catalyst gets posted twice.
+      Before importing, check the target: SELECT count(*) FROM "Post";
 
 1d. Tearing the old machine down does NOT destroy any of this: `make down` and
     `make tunnel-down` only stop containers — the postgres/uploads volumes survive
