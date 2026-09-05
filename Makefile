@@ -1,7 +1,7 @@
 # Postiz operator targets. Thin wrappers over the existing *.sh scripts,
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
-.PHONY: help venv deploy status update down clean clean-stopped clean-deep logs \
+.PHONY: help venv postiz-export postiz-import deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
@@ -11,7 +11,7 @@
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -25,12 +25,24 @@ endif
 # once on a fresh checkout to create .venv.
 PYTHON := $(shell [ -x .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 
+# ---- setup (once per machine, and when moving to a new one) --------------
 venv:           ## Create .venv and install Python deps (run once per checkout)
 	python3 -m venv .venv || python3 -m venv .venv --without-pip
 	.venv/bin/python -m ensurepip --upgrade 2>/dev/null || \
 		curl -sS https://bootstrap.pypa.io/get-pip.py | .venv/bin/python
 	.venv/bin/python -m pip install -U pip
 	.venv/bin/python -m pip install -r requirements.txt
+
+# The other half of a machine move. A git clone + .env carries NONE of this:
+# the Postgres volume holds every connected channel and its OAuth tokens, and
+# posted_log.sqlite is what stops a fresh machine reposting the whole backlog.
+# Both targets need postgres only — they start it if it's down and stop it again
+# afterwards, so they work on a torn-down stack mid-migration.
+postiz-export:  ## Dump Postiz DB (channels/tokens/history) + posted_log to data/postiz_export [UPLOADS=1]
+	@./bin/postiz-data.sh export "UPLOADS=$(UPLOADS)"
+
+postiz-import:  ## Restore that export on a new machine [FILE=<path>] [UPLOADS=1] [FORCE=1]
+	@./bin/postiz-data.sh import "FILE=$(FILE)" "UPLOADS=$(UPLOADS)" "FORCE=$(FORCE)"
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
