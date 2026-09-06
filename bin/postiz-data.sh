@@ -33,8 +33,8 @@ POSTED_LOG="data/posted_log.sqlite"
 # Validate the subcommand before anything environmental, so a typo reports the
 # usage rather than a misleading "no .env here".
 case "$CMD" in
-  export|import) ;;
-  *) echo "usage: $0 {export|import} [FILE=..] [UPLOADS=..] [FORCE=..]"; exit 2 ;;
+  export|import|uploads) ;;
+  *) echo "usage: $0 {export|import|uploads} [FILE=..] [UPLOADS=..] [FORCE=..]"; exit 2 ;;
 esac
 
 [ -f .env ] || { echo "  ✗ REFUSING: no .env here — run this from the repo root"; exit 1; }
@@ -131,6 +131,65 @@ PY
   echo "  Still copy separately: .env, auth/, products/arboryx.ai/handles.yaml"
 }
 
+# --- uploads volume ----------------------------------------------------------
+# Postiz serves /uploads off a named volume (STORAGE_PROVIDER=local). The DB
+# carries the Media ROWS; without the files behind them every image 404s.
+#
+# Everything here runs INSIDE a container with the volume mounted, so it works
+# the same on Docker Desktop/WSL2 where the volume's real path lives in the
+# Docker VM and is not reachable from a normal shell. Each step is verified —
+# the previous version hid tar's exit code and reported success on a no-op.
+uploads_count() {
+  docker run --rm -v "${UPLOADS_VOLUME}:/v" alpine sh -c 'find /v -type f | wc -l' 2>/dev/null | tr -d '[:space:]'
+}
+
+restore_uploads() {
+  local tgz="$EXPORT_DIR/postiz-uploads.tar.gz" dir base
+  [ -n "$FILE_ARG" ] && [ "${FILE_ARG%.tar.gz}" != "$FILE_ARG" ] && tgz="$FILE_ARG"
+  if [ ! -f "$tgz" ]; then
+    echo "  ✗ REFUSING: no $tgz — copy it over, or pass FILE=<path to .tar.gz>"; return 1
+  fi
+  # Absolute path: the bind mount is what silently produced an empty /in before.
+  dir="$(cd "$(dirname "$tgz")" && pwd)"; base="$(basename "$tgz")"
+
+  gzip -t "$tgz" 2>/dev/null || { echo "  ✗ REFUSING: $tgz is corrupt (gzip -t failed)"; return 1; }
+  local want; want="$(tar tzf "$tgz" 2>/dev/null | grep -c '[^/]$')"
+  echo "  archive     $base ($want files)"
+
+  if ! docker volume inspect "$UPLOADS_VOLUME" >/dev/null 2>&1; then
+    echo "  ✗ REFUSING: no docker volume named $UPLOADS_VOLUME"
+    echo "    (the prefix follows the compose project = directory name)"
+    docker volume ls --format '{{.Name}}' | grep -i upload | sed 's/^/    found: /'
+    return 1
+  fi
+
+  local before; before="$(uploads_count)"
+  echo "  volume      $UPLOADS_VOLUME had ${before:-?} files — wiping"
+  docker run --rm -v "${UPLOADS_VOLUME}:/v" alpine \
+    sh -c 'rm -rf /v/..?* /v/.[!.]* /v/* 2>/dev/null; exit 0' >/dev/null 2>&1
+
+  if ! docker run --rm -v "${UPLOADS_VOLUME}:/v" -v "${dir}:/in:ro" alpine \
+        tar xzf "/in/${base}" -C /v; then
+    echo "  ✗ extract failed — volume is now EMPTY, re-run with a good archive"; return 1
+  fi
+
+  local after; after="$(uploads_count)"
+  if [ "${after:-0}" -lt 1 ]; then
+    echo "  ✗ extract reported success but the volume is still empty"; return 1
+  fi
+  echo "  uploads     restored — $after files in the volume"
+
+  # nginx in the postiz image reads these as a non-root user; a fresh extract is
+  # root-owned. Best effort: only matters when the container is up.
+  if [ -n "$(docker ps --filter 'name=^postiz$' -q)" ]; then
+    docker exec postiz sh -c 'chown -R www:www /uploads 2>/dev/null || chown -R nginx:nginx /uploads 2>/dev/null || true' >/dev/null 2>&1
+    echo "  ownership   fixed inside the postiz container"
+  else
+    echo "  ! postiz container not running — start it, then: docker exec postiz chown -R www:www /uploads"
+  fi
+  return 0
+}
+
 # --- import ------------------------------------------------------------------
 do_import() {
   local dump="$FILE_ARG"
@@ -197,10 +256,8 @@ do_import() {
     fi
   fi
 
-  if [ "$UPLOADS" = "1" ] && [ -f "$EXPORT_DIR/postiz-uploads.tar.gz" ]; then
-    docker run --rm -v "${UPLOADS_VOLUME}:/v" -v "$PWD/$EXPORT_DIR:/in" alpine \
-      tar xzf /in/postiz-uploads.tar.gz -C /v >/dev/null 2>&1 \
-      && echo "  uploads     restored" || echo "  ! uploads restore failed"
+  if [ "$UPLOADS" = "1" ]; then
+    restore_uploads || exit 1
   fi
 
   echo
@@ -214,6 +271,8 @@ do_import() {
 }
 
 case "$CMD" in
-  export) do_export ;;
-  import) do_import ;;
+  export)  do_export ;;
+  import)  do_import ;;
+  # Media only — no DB touched, so it's safe on a machine already running.
+  uploads) echo "[postiz-uploads]"; restore_uploads ;;
 esac

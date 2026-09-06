@@ -1,7 +1,7 @@
 # Postiz operator targets. Thin wrappers over the existing *.sh scripts,
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
-.PHONY: help venv postiz-export postiz-import deploy status update down clean clean-stopped clean-deep logs \
+.PHONY: help venv postiz-export postiz-import postiz-uploads deploy status update down clean clean-stopped clean-deep logs \
         ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
@@ -43,6 +43,10 @@ postiz-export:  ## Dump Postiz DB (channels/tokens/history) + posted_log to data
 
 postiz-import:  ## Restore that export on a new machine [FILE=<path>] [UPLOADS=1] [FORCE=1]
 	@./bin/postiz-data.sh import "FILE=$(FILE)" "UPLOADS=$(UPLOADS)" "FORCE=$(FORCE)"
+
+# Media only, no DB touched — for when the DB is already imported but images 404.
+postiz-uploads: ## Reload the /uploads volume from postiz-uploads.tar.gz [FILE=<path>]
+	@./bin/postiz-data.sh uploads "FILE=$(FILE)"
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
