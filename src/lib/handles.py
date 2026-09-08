@@ -29,6 +29,7 @@ STORE = REPO_ROOT / "products" / "_shared" / "handles.json"
 _CHAN = {"x": "x", "twitter": "x", "linkedin": "linkedin", "li": "linkedin"}
 
 _ENDPOINT_CACHE: dict = {}  # (url, norm_name) -> {channel: handle}
+_ID_TOKEN_CACHE: dict = {}  # audience -> (id_token, cached_at_epoch)
 
 
 def _norm(name: str) -> str:
@@ -50,23 +51,56 @@ def handle_for(entity_name: str, channel: str) -> str | None:
     return rec.get(_CHAN.get(channel.lower(), channel.lower())) or None
 
 
+def _endpoint_id_token(audience: str) -> str | None:
+    """Google-signed OIDC token for a private (auth-required) endpoint, or None.
+
+    Cloud Run's handle-resolver is not public; the local :8084 one needs nothing.
+    Mints from GOOGLE_APPLICATION_CREDENTIALS, cached ~50 min (tokens last 1 h).
+    Any failure -> None: the caller then tries unauthenticated, same as before.
+    """
+    import time
+    hit = _ID_TOKEN_CACHE.get(audience)
+    if hit and time.time() - hit[1] < 3000:
+        return hit[0]
+    try:
+        import os
+        key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not key or not os.path.isfile(key):
+            return None
+        from google.oauth2 import service_account
+        import google.auth.transport.requests as _gar
+        creds = service_account.IDTokenCredentials.from_service_account_file(
+            key, target_audience=audience)
+        creds.refresh(_gar.Request())
+        _ID_TOKEN_CACHE[audience] = (creds.token, time.time())
+        return creds.token
+    except Exception:  # noqa: BLE001 — no creds / lib / network -> unauthenticated attempt
+        return None
+
+
 def _endpoint_lookup(url: str, name: str, channel: str) -> str | None:
     key = (url, _norm(name))
     if key not in _ENDPOINT_CACHE:
         rec = {}
         try:
+            import urllib.parse
             import urllib.request
             body = json.dumps({"entities": [name],
                                "channels": ["linkedin", "x"]}).encode("utf-8")
+            headers = {"Content-Type": "application/json",
+                       "User-Agent": "arboryx-daily/1.0"}
+            if url.lower().startswith("https://"):  # private Cloud Run — attach OIDC
+                parts = urllib.parse.urlsplit(url)
+                tok = _endpoint_id_token(f"{parts.scheme}://{parts.netloc}")
+                if tok:
+                    headers["Authorization"] = "Bearer " + tok
             req = urllib.request.Request(
-                url, data=body, method="POST",
-                headers={"Content-Type": "application/json",
-                         "User-Agent": "arboryx-daily/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+                url, data=body, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=25) as r:
                 data = json.loads(r.read().decode("utf-8", "ignore"))
             got = data.get(name) if isinstance(data, dict) else None
             rec = got if isinstance(got, dict) else {}
-        except Exception:  # noqa: BLE001 — endpoint down = fall through, never fail a post
+        except Exception:  # noqa: BLE001 — endpoint down/denied = fall through, never fail a post
             rec = {}
         _ENDPOINT_CACHE[key] = rec
     return _ENDPOINT_CACHE[key].get(_CHAN.get(channel.lower(), channel.lower())) or None

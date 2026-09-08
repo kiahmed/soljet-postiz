@@ -74,8 +74,8 @@ Configs expect these `${VAR}` names (mirror the arboryx pattern):
 POSTIZ_INTEGRATION_ID_X_ACME=<x integration id>
 POSTIZ_INTEGRATION_ID_LINKEDIN_ACME=<linkedin integration id>
 POSTIZ_CUSTOMER_ID_ACME=<postiz customer id>
-# shared, already present: HANDLE_ENDPOINT_URL, GOOGLE_APPLICATION_CREDENTIALS,
-#   LINKEDIN_CLIENT_ID/SECRET
+# shared, already present: HANDLE_ENDPOINT_URL (private Cloud Run handle-
+#   resolver), GOOGLE_APPLICATION_CREDENTIALS, LINKEDIN_CLIENT_ID/SECRET
 ```
 Then reference them in `tier.config` as `${POSTIZ_INTEGRATION_ID_X_ACME}` etc.
 
@@ -139,7 +139,7 @@ Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 | Field | Meaning |
 |---|---|
 | `HANDLE_INJECTION` | `true` = @-mention subject entities |
-| `HANDLE_ENDPOINT_URL` | `${…}` resolver endpoint (or embed handles on cards) |
+| `HANDLE_ENDPOINT_URL` | `${…}` private Cloud Run handle-resolver, OIDC-authed via `GOOGLE_APPLICATION_CREDENTIALS`; read from `.env`. Empty = card-embedded handles + `products/_shared/handles.json` only |
 | `ENTITY_TAG_MODE` | `prefer_handle` \| `handle_only` \| `cashtag_only` \| `both` |
 | `MAX_ENTITY_TAGS` | cap (default 2) |
 | `CASHTAGS_ENABLED` | `$TICKER` cashtags (needs a US-listed marker; off by default) |
@@ -201,15 +201,37 @@ See daily-posting.md §"Posting one by hand" for the `--copy`/`--show` helpers.
 ## 5. Run on autopilot (local cron or GCP prod)
 
 The daily poster runs on one of two backends, chosen by `GCP_PROD_SCHEDULER` in
-`.env` (`disabled` = local supercronic container, `enabled` = GCP Cloud
-Scheduler → trigger sidecar). The same targets drive either backend:
+`.env`. One set of `make scheduler-*` targets drives both —
+`ops/scheduler/scheduler-ctl.sh` reads the flag and dispatches. Only one backend
+runs at a time.
+
+| | **local** — `GCP_PROD_SCHEDULER=disabled` (default) | **prod / GCP** — `GCP_PROD_SCHEDULER=enabled` |
+|---|---|---|
+| Schedule lives in | generated crontab `ops/scheduler/crontab`, run by supercronic **inside the container** | **GCP Cloud Scheduler** jobs (`postiz-daily-<channel>`) — the timer is in Google's cloud |
+| Container | `postiz-scheduler` (supercronic daemon) | `postiz-scheduler-trigger` (HTTP listener, `ops/scheduler/trigger.py`) |
+| Compose profile | `scheduler` | `scheduler-gcp` |
+| A run is triggered by | supercronic firing `run-daily.sh` off the in-container crontab | Cloud Scheduler POSTing the trigger through the **Cloudflare tunnel** → `run-daily.sh` |
+| Also needs | nothing external | `gcloud` auth on the make host; a Cloudflare tunnel ingress route to `http://postiz-scheduler-trigger:8090`; `SCHEDULER_TRIGGER_*` in `.env` |
+| Posting logic runs | on this machine | on this machine (Cloud Scheduler is **only** the timer) |
+
+Either way the posting logic — `make post`, docker-exec confirmation, the sqlite
+posted-log, KG card PNGs — stays on the machine running the stack. Switching
+backends: flip the flag, `make scheduler-down` in the old mode, `make scheduler-up`
+in the new one.
 
 ```bash
-make scheduler-up          # start (local container, or GCP jobs + trigger)
-make scheduler-run         # fire ONE run now (test) — same as a real daily fire
-make scheduler-logs        # follow it
-make scheduler-restart     # re-apply the schedule after editing channels.conf
-make scheduler-down        # stop + remove (local container, or GCP jobs)
+make scheduler-up          # local: gen crontab + `compose --profile scheduler up -d --build scheduler`
+                           # GCP:   `compose --profile scheduler-gcp up -d --build scheduler-trigger`
+                           #        + ensure Cloudflare route + upsert Cloud Scheduler jobs
+make scheduler-run         # fire ONE run now — local: exec run-daily.sh · GCP: gcp-scheduler.sh run
+make scheduler-logs        # follow  — local: container logs · GCP: gcp-scheduler.sh logs
+make scheduler-restart     # re-apply after editing channels.conf (§5.1)
+                           # local: regen crontab + `compose restart scheduler` (container keeps its env —
+                           #        a compose/.env change needs `scheduler-down` + `-up`)
+                           # GCP:   RECREATES the trigger container (`up -d --build`) + re-ensure route
+                           #        + re-upsert jobs — picks up compose/.env changes
+make scheduler-down        # local: remove the container
+                           # GCP:   ⚠ DELETE the Cloud Scheduler jobs + Cloudflare route, remove the trigger
 ```
 
 ### 5.1 Frequency & volume — `ops/scheduler/channels.conf`
@@ -262,12 +284,21 @@ Dry-run without spending: `DRY=1 ./gcp-scheduler.sh create` prints the exact
 gcloud calls; `SCHEDULER_DRY_RUN=1` makes a fired run echo its resolved
 `make post` line instead of posting. Full design: `docs/scheduler.md`.
 
-**What the scheduler needs** (already wired in `docker-compose.yaml`, confirm
-per environment):
-- `GOOGLE_APPLICATION_CREDENTIALS` — a service-account key with Datastore read,
-  identity-mounted into the container (user ADC can't run headless).
-- `HANDLE_ENDPOINT_URL: http://host.docker.internal:8084` — the handle resolver,
-  reachable from inside the container (host uses `localhost:8084`).
+**What a run needs** (host runs and both scheduler containers alike — already
+wired in `docker-compose.yaml`, confirm per environment):
+- `GOOGLE_APPLICATION_CREDENTIALS` — a service-account key with Datastore read
+  **and `roles/run.invoker`** on the handle-resolver Cloud Run service.
+  Identity-mounted into the scheduler containers at its host path (user ADC
+  can't run headless).
+- `HANDLE_ENDPOINT_URL` — the private Cloud Run handle-resolver
+  (`https://handle-resolver-…-uc.a.run.app`). `src/lib/handles.py` mints a
+  Google OIDC token from `GOOGLE_APPLICATION_CREDENTIALS` for it; on any
+  failure it falls back to card-embedded handles and never blocks a post.
+  **Not** set in `docker-compose.yaml` — `load_dotenv()` reads it from the
+  mounted `/app/.env`, so host and containers share the one value. (Point it
+  at a local `http://…:8084` resolver instead and no token is sent — `http://`
+  is treated as trusted/local.)
+- Container egress to `*.run.app` and Google's token endpoints.
 - The KG repo mounted read-only if a tier reads `duckdb`/`cards` from it.
 
 **A cloud fire does exactly what `make post` does locally** — one post per
