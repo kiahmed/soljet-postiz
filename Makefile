@@ -11,7 +11,8 @@
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS \
+              KEEP MODE EVENT PART
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -129,6 +130,25 @@ social-cache-clean:  ## Drop matching entries so they re-resolve (usage: make so
 
 social-cache-update: ## Re-resolve matching entries live (usage: make social-cache-update <channel> <entity...>)
 	@$(PYTHON) bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
+
+# ---- Facades · Simmer (event-driven product; bin/simmer_poster.py) ------
+# No scheduler: the Simmer engine publishes state-change events to Pub/Sub and
+# the poster (Cloud Run in prod) consumes them. These targets are for local
+# work. See ops/simmer/README.md.
+simmer-e2e:         ## Full local e2e: Pub/Sub emulator + stubs + real Postiz DRAFTs [--keep]
+	@./ops/simmer/dev/run-e2e.sh $(if $(KEEP),--keep)
+
+simmer-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1]
+	$(PYTHON) bin/simmer_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+simmer-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
+	$(PYTHON) bin/simmer_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+simmer-event:       ## Process one inline event (usage: make simmer-event EVENT='{"product":"simmer",...}') [MODE=] [DRY=1]
+	$(PYTHON) bin/simmer_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+simmer-deploy:      ## Provision Simmer's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--snap-only|--poster-only|--pubsub-only]
+	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,
