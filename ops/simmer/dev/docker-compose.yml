@@ -1,0 +1,18 @@
+# Temp infra for the Simmer poster e2e. Only the Pub/Sub emulator needs a
+# container; the API + snap stubs are plain stdlib Python (run-e2e.sh starts
+# them). `docker compose -f ops/simmer/dev/docker-compose.yml up -d pubsub`
+services:
+  pubsub:
+    image: google/cloud-sdk:emulators
+    container_name: simmer-pubsub-emu
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=marketresearch-agents
+    ports:
+      - "8681:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

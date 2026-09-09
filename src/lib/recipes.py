@@ -88,6 +88,9 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
                 context=ctx,
             )
 
+        if ds.type == "simmer_api":
+            return _simmer_bundle(tier, item)
+
         if ds.type in ("cards_json", "firestore_cards"):
             related = src.get_related(source_id)
             link = deep_link_for(tier, "cards_json", item) or ""
@@ -132,6 +135,100 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
             context=ctx,
         )
     raise KeyError(f"source-id '{source_id}' not found in tier '{tier.id}'")
+
+
+# ---------- Simmer (Facades) — event-driven, deterministic templating ----------
+
+def _fmt_num(v, nd: int = 2, pct: bool = False, plus: bool = False) -> str | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if pct:
+        f = f * 100 if abs(f) <= 1.5 else f
+        return f"{f:.0f}%"
+    s = f"{f:.{nd}f}"
+    return f"+{s}" if plus and f >= 0 else s
+
+
+def compose_simmer(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
+    """Deterministic post text from Simmer engine state. No LLM — the numbers
+    ARE the message, and the post must equal the snapshot at publish time.
+
+    Two states: `watch_entered` ("started simmering") and `ready`
+    ("ready to serve"). Missing metrics degrade gracefully (watch cards can
+    carry nulls before the engine has a full read)."""
+    sym = (card.get("symbol") or "").upper()
+    st = card.get("state") or "watch_entered"
+    m = card.get("metrics") or {}
+    expiry = card.get("expiry") or ""
+    iv = _fmt_num(m.get("iv_pct"), pct=True)
+    vrp = _fmt_num(m.get("vrp"), nd=2)
+    em = _fmt_num(m.get("em_1sd"), nd=1)
+    news = card.get("sentiment") or {}
+    news_score = _fmt_num(news.get("score"), nd=2, plus=True)
+
+    bits: list[str]
+    if st == "ready":
+        bits = [f"${sym} is ready to serve."]
+        if iv or vrp:
+            bits.append("IV pct " + (iv or "n/a") + (f", VRP {vrp}" if vrp else "") + ".")
+        if em:
+            bits.append(f"Short strikes sit outside the GEX wall and the 1-SD move (±{em}).")
+        if expiry:
+            bits.append(f"Expiry {expiry}.")
+        if news_score:
+            bits.append(f"News read {news_score}.")
+        bits.append("A snapshot of engine state, not advice.")
+    else:  # watch_entered / simmering
+        bits = [f"${sym} just went on the stove."]
+        seg = []
+        if iv:
+            seg.append(f"IV pct {iv}")
+        if vrp:
+            seg.append(f"VRP {vrp}")
+        if em:
+            seg.append(f"expected move ±{em}")
+        if seg:
+            bits.append(", ".join(seg) + (f" into {expiry}." if expiry else "."))
+        bits.append("Watching the gates — we'll say when it's ready.")
+
+    text = " ".join(b for b in bits if b)
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def _simmer_bundle(tier: Tier, card: dict) -> PostBundle:
+    sym = (card.get("symbol") or "").upper()
+    link = deep_link_for(tier, "simmer_api", card) or card.get("url") or ""
+    text = compose_simmer(tier, card, max_chars=_budget_for_link(link))
+    text = append_link_to_text(text, link)
+    return PostBundle(
+        text=text,
+        source_type="simmer_api",
+        source_id=card.get("card_id") or card.get("id") or sym,
+        context={
+            "source_url": card.get("url") or "",
+            "sector": "Options income",
+            "title": (card.get("headline") or "")[:120],
+            "subtitle": f"{sym} · {card.get('state') or ''}",
+            "card": card,
+            "deep_link": link,
+        },
+    )
+
+
+def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None) -> PostBundle:
+    """Simmer post for one ticker state-change. `state` (from the Pub/Sub event:
+    watch_entered | ready | …) overrides whatever the API's current decision
+    implies, so an event fired on the transition posts the right moment even if
+    the engine has moved on by the time we re-pull."""
+    src = build_source(tier.sources[0], tier)
+    card = src.get(source_id)
+    if state:
+        card["state"] = state
+    return _simmer_bundle(tier, card)
 
 
 def recipe_narrative(tier: Tier, slug: str, repo_root: Path) -> PostBundle:

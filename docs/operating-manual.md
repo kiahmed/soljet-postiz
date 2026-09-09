@@ -7,6 +7,8 @@ cloud. Keep it current: when a step changes, edit it here in the same PR.
 Related docs (don't duplicate — cross-reference):
 - **[daily-posting.md](daily-posting.md)** — the day-to-day human routine, where
   hand-post images/text live, troubleshooting.
+- **[simmer.md](simmer.md)** — the first **event-driven** product (Facades ·
+  Simmer): no scheduler, Pub/Sub → Cloud Run poster. §5.3 here is the pointer.
 - **[linkedin-mentions.md](linkedin-mentions.md)** — how @mentions become real
   LinkedIn tags (slug → org URN) and the collision guard.
 - **catalyst-knowledge-graph `docs/handle-resolution-spec.md`** — the upstream
@@ -57,8 +59,14 @@ Copy `products/arboryx.ai/tier.config` as a starting point and edit (field
 reference in §3). At minimum set: `TIER_ID`, `TIER_NAME`, a `DATA_SOURCE_1_*`,
 the channel IDs, `POSTIZ_CUSTOMER_ID`, and `POSTING_PURPOSE`.
 
+> **File-per-product layout** (Facades products — Simmer/Matrix/Torque): instead
+> of a directory per tier, several products share `products/facades/` with one
+> `<name>_tier.config` + `<name>_context.md` each. The loader supports both; pick
+> whichever fits. See `products/facades/simmer_tier.config`.
+
 ### 2.3 Register the tier id (the ONE code touch)
-`src/lib/config_loader.py` → add to `_TIER_DIR_BY_ID`:
+`src/lib/config_loader.py` → add to **`_TIER_DIR_BY_ID`** (dir-per-tier) **or**
+**`_TIER_FILE_BY_ID`** (file-per-product):
 ```python
 _TIER_DIR_BY_ID = {
     "arboryx": PRODUCTS_ROOT / "arboryx.ai",
@@ -66,7 +74,12 @@ _TIER_DIR_BY_ID = {
     "acme": PRODUCTS_ROOT / "acme.ai",                                  # ← new
     "acme.<branch>": PRODUCTS_ROOT / "acme.ai" / "branches" / "<branch>",  # if any
 }
+_TIER_FILE_BY_ID = {                                    # file-per-product
+    "simmer": (_FACADES_DIR / "simmer_tier.config", _FACADES_DIR),
+}
 ```
+`known_tiers()` returns every id from both maps — it's what `make check` and the
+status tools enumerate.
 
 ### 2.4 Add the secrets/IDs to `.env`
 Configs expect these `${VAR}` names (mirror the arboryx pattern):
@@ -102,19 +115,21 @@ branches) or use the default.
 **Identity**
 | Field | Meaning |
 |---|---|
-| `TIER_ID` | dotted id, must match `_TIER_DIR_BY_ID` |
+| `TIER_ID` | the id key in `_TIER_DIR_BY_ID` / `_TIER_FILE_BY_ID` (dotted for a branch) |
 | `TIER_NAME` | human label |
 | `TIER_PARENT` | parent id (`""` for a product, `<product>` for a branch) |
 | `CONTEXT_FILE` | voice/brand file the composer reads (`context.md`) |
 | `POSTING_PURPOSE` | free text steering tone/audience |
 
-**Data source(s)** — `DATA_SOURCE_<n>_*`, source `1` is the daily feed
+**Data source(s)** — `DATA_SOURCE_<n>_*`, source `1` is the primary feed
 | Type | Use |
 |---|---|
 | `firestore` | parent findings collection (e.g. `findings`) |
 | `firestore_cards` | KG per-card collection (`CKG-<Sector>/catalysts/items`) — the live cards the site serves |
+| `cards_json` | a local `cards.json` KG artifact (`_PATH`) |
 | `duckdb` | local KG DuckDB (`_PATH`) |
 | `firestore_inherited` | reuse the parent's Firestore, filtered (`_INHERIT_FROM`, `_FILTER_CATEGORY`) |
+| `simmer_api` | EdgeLane read-only API — event-driven products (Simmer); `_BASE_URL`, `_TOKEN_ENV`. See `docs/simmer.md`. |
 
 Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 
@@ -155,20 +170,21 @@ All posting runs through `bin/daily.py` (queue) or `bin/post.py` (one card),
 wrapped by make targets. **Preview is the default; nothing publishes without
 `--push` / `make post`.**
 
-**Knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
-`CHANNEL=linkedin|x` one channel · `TIER=acme.<branch>` one tier.
+**`TIER=<id>` is REQUIRED** for `post` / `post-preview` / `regenerate` — a run
+always targets one named tier; there is no "all tiers" sweep (`make post` with no
+tier is refused). `make check` is the tier-less overview.
+
+**Other knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
+`CHANNEL=linkedin|x` one channel.
 
 ```bash
-# preview the next post for every enabled tier, all channels
-make post-preview
-
-# preview a specific tier / channel / oldest-first backlog walk
-make post-preview TIER=acme OLDEST=1
-make post-preview CHANNEL=linkedin
+# what would post next, one tier
+make post-preview TIER=acme
+make post-preview TIER=acme OLDEST=1 CHANNEL=linkedin
 
 # actually publish (same knobs)
-make post
-make post OLDEST=1 TIER=acme.robotics CHANNEL=linkedin
+make post TIER=acme.robotics
+make post TIER=acme.robotics OLDEST=1 CHANNEL=linkedin
 
 # re-compose from scratch (discard the staged content_cache) then preview
 make regenerate TIER=acme
@@ -246,6 +262,9 @@ x        | 5 | 70m | arboryx.robotics | 30 8 * * *
 
 - `count` — cards posted per daily fire (X bills ~$0.20/post: cost dial).
 - `delay` — spacing between cards within a run (`90` secs, or `60m`/`2h`).
+- `tier`  — **required**; the one tier this row posts. A fire always targets
+  exactly one tier — `make post` has no "all tiers" mode and refuses without a
+  `TIER=`.
 - `cron`  — when the run fires (5-field; TZ = `SCHEDULER_TZ` locally,
   `GCP_SCHEDULER_TZ` on GCP).
 
@@ -301,13 +320,26 @@ wired in `docker-compose.yaml`, confirm per environment):
 - Container egress to `*.run.app` and Google's token endpoints.
 - The KG repo mounted read-only if a tier reads `duckdb`/`cards` from it.
 
-**A cloud fire does exactly what `make post` does locally** — one post per
-enabled tier, per channel, published + confirmed; X failures → manual queue;
-LinkedIn attaches the card image and resolves real @mentions.
+**A cloud fire does exactly what `make post TIER=<row>` does locally** — for the
+one tier named in that `channels.conf` row, a post on the row's channel,
+published + confirmed; X failures → manual queue; LinkedIn attaches the card
+image and resolves real @mentions.
 
 > **Notifications:** there's no external notifier by design. Postiz's own UI
 > surfaces failures, and the manual queue captures anything X couldn't publish.
 > You don't need a laptop running.
+
+### 5.3 Event-driven products (no scheduler)
+
+Some products don't drain a daily backlog — they post on an upstream event, so
+they have **no `channels.conf` row and no scheduler target**. **Simmer**
+(Facades) is the first: its engine publishes ticker state-change events to a
+GCP Pub/Sub topic and a dedicated Cloud Run service (`simmer-poster`,
+`bin/simmer_poster.py`) consumes them and posts via the Postiz API — it
+terminates on Cloud Run, nothing runs on this box. `POSTING_CADENCE_DAILY="false"`
+in the tier.config marks such a product; `make post`/`--check`/`social-status`
+still see it (`make post TIER=simmer` works for a manual one-off). Full picture,
+GCP provisioning (`ops/simmer/deploy.sh`), and the local e2e: **`docs/simmer.md`**.
 
 ---
 
@@ -327,13 +359,16 @@ died — `make heal`. This is the historical #1 failure mode.
 ## 7. New-product checklist (copy per product)
 
 - [ ] Postiz: channels connected, Customer created, IDs noted
-- [ ] `products/<name>.ai/tier.config` (+ `context.md`, optional `branches/`)
-- [ ] `_TIER_DIR_BY_ID` entry in `src/lib/config_loader.py`
+- [ ] `products/<name>.ai/tier.config` **or** `products/facades/<name>_tier.config` (+ context, optional `branches/`)
+- [ ] `_TIER_DIR_BY_ID` **or** `_TIER_FILE_BY_ID` entry in `src/lib/config_loader.py`
 - [ ] `.env`: integration IDs + customer ID
 - [ ] `make check` lists the tier with its channels
 - [ ] `make post-preview TIER=<name>` composes cleanly (text, image, tags)
 - [ ] one real `make post TIER=<name>` verified in Postiz
-- [ ] scheduler picks it up (enabled tier, live channels) — `make scheduler-run`
+- [ ] **daily-cadence product:** add a `channels.conf` row (with the `tier`
+      column) and `make scheduler-run` picks it up
+- [ ] **event-driven product** (§5.3): `POSTING_CADENCE_DAILY="false"`, deploy
+      its poster/subscription — no `channels.conf` row
 
 ---
 

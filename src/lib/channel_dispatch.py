@@ -58,7 +58,7 @@ def attach_media(client, tier, source_type: str, source_id: str,
     dl = deep_link_from_text(text)
     if dl:
         ctx["deep_link"] = dl
-    if source_type in ("cards_json", "firestore_cards") and tier.sources:
+    if source_type in ("cards_json", "firestore_cards", "simmer_api") and tier.sources:
         try:
             ctx["card"] = build_source(tier.sources[0], tier).get(source_id)
         except Exception:  # noqa: BLE001
@@ -139,7 +139,7 @@ def _entities_for(tier, source_type: str, source_id: str) -> list:
     """Primary subject entities of the item (relationship-weighted), so @mentions
     feature the event's actual subject rather than whichever entity is listed
     first. Side effect: memoizes the card's context text for the handle guard."""
-    if source_type not in ("cards_json", "firestore_cards") or not tier.sources:
+    if source_type not in ("cards_json", "firestore_cards", "simmer_api") or not tier.sources:
         return []
     try:
         from .composer import primary_entities

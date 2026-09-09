@@ -13,7 +13,8 @@
 # Knob precedence: positional arg > real env var > .env > built-in default.
 #   DAILY_POST_COUNT   cards per run   (default 1)
 #   DAILY_POST_DELAY   between cards   (default 90; accepts 90 / 60m / 2h)
-#   DAILY_POST_TIER    tier to post    (default arboryx.robotics; empty = ALL)
+#   DAILY_POST_TIER    tier to post    (default arboryx.robotics; REQUIRED —
+#                                       `make post` has no "all tiers" mode)
 #
 # Cost note: X bills ~$0.20 per post, so COUNT is a money dial.
 # Set SCHEDULER_DRY_RUN=1 to print the resolved `make post` line and exit
@@ -51,13 +52,14 @@ COUNT="${ARG_COUNT:-${DAILY_POST_COUNT:-$(envget DAILY_POST_COUNT)}}"; COUNT="${
 DELAY="${ARG_DELAY:-${DAILY_POST_DELAY:-$(envget DAILY_POST_DELAY)}}"; DELAY="${DELAY:-90}"
 CHANNEL="$ARG_CHANNEL"   # channel is per-run only; no env fallback (all-channels when empty)
 
-# TIER: positional wins; else unset env -> default robotics; set-but-empty -> all tiers.
+# TIER is REQUIRED — `make post` refuses without one (no "all tiers" sweep).
+# Precedence: positional arg > DAILY_POST_TIER env > .env > built-in default.
 if [ -n "$ARG_TIER" ]; then TIER="$ARG_TIER"
-elif [ -n "${DAILY_POST_TIER+x}" ]; then TIER="$DAILY_POST_TIER"
-else TIER="$(envget DAILY_POST_TIER)"; TIER="${TIER-}"
-     [ -z "$TIER" ] && ! grep -qE '^DAILY_POST_TIER=' ./.env 2>/dev/null \
-       && TIER="arboryx.robotics"
+elif [ -n "${DAILY_POST_TIER:-}" ]; then TIER="$DAILY_POST_TIER"
+else TIER="$(envget DAILY_POST_TIER)"
+     [ -z "$TIER" ] && TIER="arboryx.robotics"   # fallback so a bare fire still targets something
 fi
+[ -n "$TIER" ] || { echo "[error] no tier resolved — pass one as arg 4 or set DAILY_POST_TIER"; exit 2; }
 
 case "$COUNT" in ''|*[!0-9]*) echo "[warn] COUNT='$COUNT' not a number — using 1"; COUNT=1;; esac
 case "$DELAY" in ''|*[!0-9smhd]*) echo "[warn] DELAY='$DELAY' not a duration — using 90"; DELAY=90;; esac
@@ -68,12 +70,12 @@ POST_ARGS=(READY=1 OLDEST=1 COUNT="$COUNT" DELAY="$DELAY")
 [ -n "$TIER" ]    && POST_ARGS+=(TIER="$TIER")
 
 if [ "${SCHEDULER_DRY_RUN:-}" = "1" ]; then
-  echo "[dry-run] channel=${CHANNEL:-<all enabled>} count=$COUNT delay=$DELAY tier=${TIER:-<all enabled>}"
+  echo "[dry-run] channel=${CHANNEL:-<all enabled>} count=$COUNT delay=$DELAY tier=${TIER}"
   echo "[dry-run] make post ${POST_ARGS[*]}"
   exit 0
 fi
 
-echo "===== daily run $(date -u +%FT%TZ)  channel=${CHANNEL:-<all>} tier=${TIER:-<all>} ====="
+echo "===== daily run $(date -u +%FT%TZ)  channel=${CHANNEL:-<all>} tier=${TIER} ====="
 case "${CHANNEL:-all}" in
   linkedin) COSTNOTE="(LinkedIn — free)" ;;
   *)        COSTNOTE="(~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)" ;;

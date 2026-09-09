@@ -53,6 +53,34 @@ _TIER_DIR_BY_ID = {
     "arboryx.robotics": PRODUCTS_ROOT / "arboryx.ai" / "branches" / "robotics",
 }
 
+# File-per-product layout: several products share one directory
+# (products/facades/), one `<name>_tier.config` each, `<name>_context.md`
+# alongside. tier.dir stays the shared dir so CONTEXT_FILE + relative
+# DATA_SOURCE paths resolve exactly as in the dir-per-tier layout.
+_FACADES_DIR = PRODUCTS_ROOT / "facades"
+_TIER_FILE_BY_ID = {
+    "simmer": (_FACADES_DIR / "simmer_tier.config", _FACADES_DIR),
+    # "matrix": (_FACADES_DIR / "matrix_tier.config", _FACADES_DIR),
+    # "torque": (_FACADES_DIR / "torque_tier.config", _FACADES_DIR),
+}
+
+
+def known_tiers() -> list[str]:
+    """Every registered tier id (both layouts), stable order — the source of
+    truth for status tooling that used to hard-code the list."""
+    return sorted({*_TIER_DIR_BY_ID, *_TIER_FILE_BY_ID})
+
+
+def _resolve_tier_paths(tier_id: str) -> tuple[Path, Path]:
+    """(config_file, base_dir) for a tier id, either layout."""
+    if tier_id in _TIER_FILE_BY_ID:
+        return _TIER_FILE_BY_ID[tier_id]
+    if tier_id in _TIER_DIR_BY_ID:
+        d = _TIER_DIR_BY_ID[tier_id]
+        return d / "tier.config", d
+    known = list(_TIER_DIR_BY_ID) + list(_TIER_FILE_BY_ID)
+    raise KeyError(f"Unknown tier '{tier_id}'. Known: {known}")
+
 
 @dataclass
 class DataSource:
@@ -129,10 +157,8 @@ def _collect_channels(raw: dict) -> list[str]:
 
 
 def load_tier(tier_id: str) -> Tier:
-    if tier_id not in _TIER_DIR_BY_ID:
-        raise KeyError(f"Unknown tier '{tier_id}'. Known: {list(_TIER_DIR_BY_ID)}")
-    tier_dir = _TIER_DIR_BY_ID[tier_id]
-    raw = _parse_config(tier_dir / "tier.config")
+    config_file, tier_dir = _resolve_tier_paths(tier_id)
+    raw = _parse_config(config_file)
 
     parent_id = raw.get("TIER_PARENT") or None
     parent: Tier | None = load_tier(parent_id) if parent_id else None

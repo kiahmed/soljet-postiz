@@ -6,6 +6,7 @@ from .cards_source import CardsJSON
 from .duckdb_source import DuckDBKG
 from .firestore_cards_source import FirestoreCards
 from .firestore_source import FirestoreFindings
+from .simmer_source import SimmerAPI
 
 
 def build_source(ds, tier) -> Source:
@@ -33,6 +34,13 @@ def build_source(ds, tier) -> Source:
         return FirestoreCards(
             gcp_project=ds.params["gcp_project"],
             collection=ds.params["collection"],
+        )
+    if ds.type == "simmer_api":
+        return SimmerAPI(
+            base_url=ds.params.get("base_url", ""),
+            token_env=ds.params.get("token_env", "SIMMER_API_TOKEN"),
+            ready_path=ds.params.get("ready_path", "/simmer/ready"),
+            state_path=ds.params.get("state_path", "/simmer/state"),
         )
     raise ValueError(f"Unknown source type: {ds.type}")
 
