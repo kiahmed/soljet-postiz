@@ -50,6 +50,41 @@ make simmer-poster MODE=draft
 make simmer-e2e
 ```
 
+## What EdgeLane must provide (the upstream contract)
+
+Three things live in the **EdgeLane repo**, not here:
+
+1. **Event publisher** — the Simmer engine publishes a message to the topic
+   `facades.ticker-events` on every ticker state change, attributes
+   `product="simmer"`, `symbol`, `state` (`watch_entered`|`ready`|…), `expiry`,
+   `event_id`. This is the only EdgeLane piece that touches GCP: it needs
+   **`roles/pubsub.publisher` on that topic**. Reuse the EdgeLane backend's own
+   service account (add the one binding) or `facades-poster-sa` — either works;
+   it does **not** have to be the runtime SA.
+2. **Read-only API** on `edge.facades.trade` — `GET /simmer/ready?since=` and
+   `GET /simmer/state/<SYM>?block=card|score|gates|sentiment|evolution`,
+   bearer-token auth (the token is in Secret Manager as `simmer-api-token`).
+   Plain HTTPS — no GCP SA involved.
+3. **`?snap=1` render mode** in `simmer/ui` — a `[data-snap="card"]` wrapper
+   around the board crop, nav/toasts hidden, per-symbol `og:image` +
+   click-through to `/?symbol=<SYM>`. `simmer-snap` (deployed from here)
+   screenshots it.
+
+Until 1–3 exist, the pipeline below deploys cleanly but has nothing to consume.
+
+## Idempotent provisioning (both sides)
+
+The topic and `facades-poster-sa` are **shared** and may be created by either
+repo. Provisioning from **either** side must be safe to re-run:
+
+- `ops/simmer/deploy.sh` already is — `create … || (exists)` for the topic/SA,
+  `create … || update …` for the subscription, and `add-iam-policy-binding` is
+  idempotent by nature. Re-running it never recreates or errors on an existing
+  resource.
+- The EdgeLane side should do the same: if `facades.ticker-events` (or the SA)
+  already exists, **ensure the role binding and move on** — don't recreate.
+  Whichever repo runs first creates the resource; the other just binds to it.
+
 ## Deploy / update on GCP
 
 ```bash
