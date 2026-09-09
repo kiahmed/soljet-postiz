@@ -92,19 +92,22 @@ heal-check:     ## Report Temporal+worker health only (no restart); exit 1 if un
 check:          ## Daily poster's view: worker pollers + each tier's channels
 	$(PYTHON) bin/daily.py --check
 
+# TIER= is REQUIRED for post / post-preview / regenerate — a run always targets
+# exactly one named tier, never "all" (bin/daily.py refuses without it). Use
+# `make check` for the tier-less overview.
 # Optional knobs for ALL post targets below:
 #   OLDEST=1               oldest unposted entry instead of newest
 #   CHANNEL=linkedin|x     one channel only (default: all the tier's channels)
-#   TIER=arboryx.robotics  one tier only (default: all enabled tiers)
+#   TIER=arboryx.robotics  REQUIRED — the one tier to operate on
 _POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only)$(if $(WATCH), --watch $(WATCH))$(if $(POLL), --poll $(POLL)) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
 
-post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
+post-preview:   ## Compose posts, DO NOT publish — TIER= required [OLDEST=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py $(_POSTOPTS)
 
-regenerate:     ## Re-compose + re-stage (discard staged), no publish [OLDEST=1] [CHANNEL=] [TIER=]
+regenerate:     ## Re-compose + re-stage (discard staged), no publish — TIER= required [OLDEST=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py --regenerate $(_POSTOPTS)
 
-post:           ## Publish posts [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=] [TIER=]
+post:           ## Publish posts — TIER= required [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)

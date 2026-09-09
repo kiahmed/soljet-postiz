@@ -8,7 +8,17 @@
 set -uo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"   # worktree root
 
-PY=.venv/bin/python
+# venv resolution — a linked git worktree (.claude/worktrees/<name>) usually has
+# no .venv of its own, so fall back to the main checkout's, then system python3.
+# Paths are canonicalised so python's site machinery doesn't warn about `../`.
+_main="$(cd ../../.. 2>/dev/null && pwd || true)"
+PY=""
+for _cand in "$PWD/.venv/bin/python3" "${_main:+$_main/.venv/bin/python3}" python3; do
+  [ -n "$_cand" ] || continue
+  if command -v "$_cand" >/dev/null 2>&1; then PY="$_cand"; break; fi
+done
+: "${PY:=python3}"
+echo "[e2e] python: $PY"
 KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1
 EMU_HOST="localhost:8681"
 API_PORT=8899 SNAP_PORT=8898

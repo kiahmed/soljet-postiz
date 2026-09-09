@@ -657,6 +657,20 @@ def main() -> int:
                 print(f"  {tid:<20} → error: {e}")
         return 0 if alive else 1
 
+    # A posting/preview/regenerate run ALWAYS targets exactly one named tier —
+    # never "all". Bare `make post` used to sweep every tier; that's rejected now
+    # (a mis-set default publishing to live accounts is not a failure mode worth
+    # keeping). The scheduler passes TIER= per channels.conf row; humans pass it
+    # too. `--check` is the tier-less "show me everything" path. Checked before
+    # the Temporal pre-flight so it fails fast.
+    if not args.tier:
+        raise SystemExit(
+            "refusing: no tier selected. Pass TIER=<id> — e.g.\n"
+            "  make post TIER=arboryx.robotics\n"
+            "  make post-preview TIER=arboryx\n"
+            f"Known tiers: {', '.join(known_tiers())}\n"
+            "(`make check` lists every tier and its channels without composing.)")
+
     # Pre-flight: dead pollers strand posts in QUEUE, and a QUEUE'd post that
     # publishes later out of band is how duplicates happen. Fix it BEFORE
     # composing rather than discovering it at the 120s poll timeout.
@@ -673,14 +687,7 @@ def main() -> int:
         print("WARNING: Temporal workers are not polling — posts will queue and not "
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
-    # Bare `make post` (no TIER=) drives only the daily-cadence tiers. Event-
-    # driven products (POSTING_CADENCE_DAILY="false", e.g. simmer — bin/simmer_poster.py
-    # owns them) are still reachable with an explicit TIER=.
-    if args.tier:
-        tiers = [args.tier]
-    else:
-        tiers = [t for t in known_tiers()
-                 if str(load_tier(t).raw.get("POSTING_CADENCE_DAILY", "true")).lower() != "false"]
+    tiers = [args.tier]
     if args.watch:
         if not args.push:
             raise SystemExit("--watch needs --push (preview would re-show the same card forever)")

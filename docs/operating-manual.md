@@ -155,20 +155,21 @@ All posting runs through `bin/daily.py` (queue) or `bin/post.py` (one card),
 wrapped by make targets. **Preview is the default; nothing publishes without
 `--push` / `make post`.**
 
-**Knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
-`CHANNEL=linkedin|x` one channel · `TIER=acme.<branch>` one tier.
+**`TIER=<id>` is REQUIRED** for `post` / `post-preview` / `regenerate` — a run
+always targets one named tier; there is no "all tiers" sweep (`make post` with no
+tier is refused). `make check` is the tier-less overview.
+
+**Other knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
+`CHANNEL=linkedin|x` one channel.
 
 ```bash
-# preview the next post for every enabled tier, all channels
-make post-preview
-
-# preview a specific tier / channel / oldest-first backlog walk
-make post-preview TIER=acme OLDEST=1
-make post-preview CHANNEL=linkedin
+# what would post next, one tier
+make post-preview TIER=acme
+make post-preview TIER=acme OLDEST=1 CHANNEL=linkedin
 
 # actually publish (same knobs)
-make post
-make post OLDEST=1 TIER=acme.robotics CHANNEL=linkedin
+make post TIER=acme.robotics
+make post TIER=acme.robotics OLDEST=1 CHANNEL=linkedin
 
 # re-compose from scratch (discard the staged content_cache) then preview
 make regenerate TIER=acme
