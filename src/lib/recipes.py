@@ -219,13 +219,42 @@ def _simmer_bundle(tier: Tier, card: dict) -> PostBundle:
     )
 
 
-def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None) -> PostBundle:
+def _minimal_simmer_card(source_id: str, symbol: str, state: str | None,
+                         expiry: str | None) -> dict:
+    """A card built from the Pub/Sub event alone — used when the read-only API
+    has no stored readiness for the ticker yet (event fired ahead of the engine
+    write, or a synthetic fire). compose_simmer degrades gracefully on the
+    missing metrics."""
+    sym = (symbol or "").upper()
+    st = state or "watch_entered"
+    return {
+        "card_id": source_id, "id": source_id, "symbol": sym, "state": st,
+        "expiry": (str(expiry)[:10] if expiry else ""),
+        "metrics": {}, "sentiment": {}, "gates": {},
+        "headline": f"${sym} — {'ready to serve' if st == 'ready' else 'started simmering'}",
+        "entities": [{"name": sym, "x_handle": f"${sym}" if sym else None,
+                      "linkedin_handle": None}],
+        "url": f"https://simmer.facades.trade/?symbol={sym}",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "_enrich": "minimal",
+    }
+
+
+def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None,
+                  symbol: str | None = None, expiry: str | None = None) -> PostBundle:
     """Simmer post for one ticker state-change. `state` (from the Pub/Sub event:
     watch_entered | ready | …) overrides whatever the API's current decision
     implies, so an event fired on the transition posts the right moment even if
-    the engine has moved on by the time we re-pull."""
+    the engine has moved on by the time we re-pull. If the read-only API has no
+    card for the ticker (KeyError), fall back to a minimal card from the event
+    attributes rather than dropping the post — `symbol` must then be given."""
     src = build_source(tier.sources[0], tier)
-    card = src.get(source_id)
+    try:
+        card = src.get(source_id)
+    except KeyError:
+        if not symbol:
+            raise
+        card = _minimal_simmer_card(source_id, symbol, state, expiry)
     if state:
         card["state"] = state
     return _simmer_bundle(tier, card)

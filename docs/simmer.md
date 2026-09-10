@@ -60,16 +60,29 @@ in `edgelane_market.config`). To confirm this side consumes them:
 #    tier isn't enabled — registered + a live channel id in .env)
 make simmer-sub-local                       # DRY=1 to print the gcloud calls
 
-# 2. EdgeLane: fire a real transition (from that repo)
-#    cd ../../EdgeLane && make simmer-fire-event STATE=READY   # or STATE=WATCH
+# 2. EdgeLane: fire a transition (from that repo)
+make -C ../../EdgeLane simmer-fire-event STATE=READY     # or STATE=WATCH
 
 # 3. drain it here → a DRAFT lands on the Simmer LinkedIn channel in Postiz
-make simmer-poster MODE=draft SUB=simmer-poster-sub-local
+make simmer-poster MODE=draft SUB=simmer-poster-sub-local   # MODE=now to publish
 ```
 
-`bin/simmer_poster.py` reads the event's `state` (`watch_entered`|`ready`) against
-`POST_ON_STATES`, and dedupes on EdgeLane's deterministic `event_id`
-(`SMR-<SYM>-<YYMMDD>-<expiryYYMMDD>-<state>`).
+Behaviour:
+- **Gating** — `state` (`watch_entered`|`ready`) must be in `POST_ON_STATES`;
+  `product` must be `simmer`; dedupe key is EdgeLane's deterministic `event_id`
+  (`SMR-<SYM>-<YYMMDD>-<expiryYYMMDD>-<state>`).
+- **Enrich is best-effort** — the poster re-pulls the ticker's card from
+  `GET /simmer/state/<SYM>`. `make simmer-fire-event` fires a *synthetic*
+  transition, so that endpoint 404s ("no readiness for <SYM>") and the post
+  goes out **minimal, text-only** from the event attributes alone
+  (`$SYM … / Expiry <date> / <link>`, logged `enrich_minimal`). A real
+  engine transition carries full metrics and the board snapshot.
+- **Empty subscription** — `--pull` is drain-once; a quiet sub surfaces a
+  gRPC DeadlineExceeded which the poster treats as "nothing to pull" and
+  exits 0.
+- **Image** — a `simmer_api` post gets the `simmer-snap` crop or nothing;
+  the KG-graph / LLM imagery ladder is never used. `SIMMER_SNAP_URL` empty =>
+  text-only.
 
 ## What EdgeLane must provide (the upstream contract)
 

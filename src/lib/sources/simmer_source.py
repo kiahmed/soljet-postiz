@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -125,7 +126,14 @@ class SimmerAPI(Source):
 
     def get(self, item_id: str) -> dict:
         symbol, _, expiry_yy = parse_card_id(item_id)
-        raw = self._get(f"{self.state_path}/{urllib.parse.quote(symbol)}", {"block": "card"})
+        try:
+            raw = self._get(f"{self.state_path}/{urllib.parse.quote(symbol)}", {"block": "card"})
+        except urllib.error.HTTPError as e:
+            # 404 "no readiness for <SYM>" — event fired before the engine stored
+            # a card, or a synthetic fire. Caller falls back to a minimal card.
+            raise KeyError(f"simmer_api: {symbol} not available (HTTP {e.code})") from e
+        except urllib.error.URLError as e:
+            raise KeyError(f"simmer_api: {symbol} unreachable ({e.reason})") from e
         if not isinstance(raw, dict) or not raw:
             raise KeyError(f"simmer_api: no state for '{symbol}' ({item_id})")
         card = self._to_card(raw, state=raw.get("state"))

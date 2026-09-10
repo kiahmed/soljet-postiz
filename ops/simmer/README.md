@@ -56,6 +56,14 @@ python ops/simmer/dev/stub_api.py &   python ops/simmer/dev/stub_snap.py &
 python bin/simmer_poster.py --event '{"product":"simmer","symbol":"MSTR","state":"ready","expiry":"2026-09-19"}' --dry-run
 ```
 
+Against the **real** topic + a live EdgeLane (no stubs) — see
+`docs/simmer.md` › "Validate against REAL EdgeLane events":
+```bash
+make simmer-sub-local
+make -C ../../EdgeLane simmer-fire-event STATE=READY
+make simmer-poster MODE=draft SUB=simmer-poster-sub-local
+```
+
 ## Go live (GCP)
 
 1. **EdgeLane** — engine publishes state-change events to `facades.ticker-events`;

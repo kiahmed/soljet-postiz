@@ -167,11 +167,16 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
 
     card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat(), evt.get("expiry") or "")
     try:
-        bundle = recipe_simmer(tier, card_id, state=state)
+        bundle = recipe_simmer(tier, card_id, state=state,
+                               symbol=symbol, expiry=evt.get("expiry") or "")
     except Exception as e:  # noqa: BLE001
         result["status"] = "error"
         result["reason"] = f"compose: {e}"
         return result
+    if (bundle.context or {}).get("card", {}).get("_enrich") == "minimal":
+        _log("enrich_minimal", symbol=symbol, state=state,
+             note="read-only API had no card — posting from event attributes only")
+        result["enrich"] = "minimal"
 
     parts = bundle.parts or split_for_thread(bundle.text)
     media_paths = auto_media(tier, bundle, "single")
@@ -241,36 +246,69 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
 
 # ----------------------------------------------------------------------- modes
 def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
+    """Drain the subscription once (local / catch-up). Synchronous unary pull:
+    on an EMPTY subscription the RPC blocks server-side and eventually surfaces
+    DeadlineExceeded — that just means "nothing to pull", not an error, so it
+    exits 0 with processed=0. A message whose processing errors is left UNACKED
+    so Pub/Sub redelivers it (mirrors the push handler's 500)."""
     sub = (sub or tier.raw.get("SIMMER_PUBSUB_SUBSCRIPTION")
            or os.getenv("SIMMER_PUBSUB_SUBSCRIPTION") or "").strip()
     project = (tier.raw.get("SIMMER_PUBSUB_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
     if not sub or not project:
         _log("pull_misconfigured", subscription=sub, project=project)
         return 2
+
+    from google.api_core import exceptions as gexc
     from google.cloud import pubsub_v1
+
     client = pubsub_v1.SubscriberClient()
     path = client.subscription_path(project, sub)
-    _log("pull_start", subscription=path, max=max_msgs)
-    got = 0
+    _log("pull_start", subscription=path, max=max_msgs, budget_s=timeout)
+
+    got = errors = 0
     deadline = time.time() + timeout
     while got < max_msgs and time.time() < deadline:
-        resp = client.pull(request={"subscription": path, "max_messages": min(10, max_msgs - got)},
-                           timeout=10)
+        rpc_timeout = max(2.0, min(10.0, deadline - time.time()))
+        try:
+            resp = client.pull(
+                request={"subscription": path,
+                         "max_messages": min(10, max_msgs - got)},
+                timeout=rpc_timeout,
+                retry=None,          # don't let the client burn the whole budget retrying
+            )
+        except gexc.NotFound:
+            _log("pull_no_such_subscription", subscription=path)
+            return 2
+        except (gexc.DeadlineExceeded, gexc.RetryError, gexc.ServiceUnavailable):
+            break                    # empty / quiet subscription — normal
+        except Exception as e:       # noqa: BLE001
+            _log("pull_rpc_error", error=str(e)[:300])
+            return 3
+
         if not resp.received_messages:
             break
-        ack = []
+
+        ack, nack = [], []
         for rm in resp.received_messages:
             env = {"message": {"data": base64.b64encode(rm.message.data).decode(),
                                "attributes": dict(rm.message.attributes),
                                "messageId": rm.message.message_id}}
             r = process_event(env, tier=tier, dedupe=dedupe, mode=mode, dry_run=dry_run)
             _log("processed", **r)
-            ack.append(rm.ack_id)
             got += 1
+            if r.get("status") == "error":
+                errors += 1
+                nack.append(rm.ack_id)
+            else:
+                ack.append(rm.ack_id)
         if ack:
             client.acknowledge(request={"subscription": path, "ack_ids": ack})
-    _log("pull_done", processed=got)
-    return 0
+        if nack:                     # 0s deadline => immediate redelivery
+            client.modify_ack_deadline(request={"subscription": path,
+                                                "ack_ids": nack, "ack_deadline_seconds": 0})
+
+    _log("pull_done", processed=got, errors=errors)
+    return 1 if errors else 0
 
 
 def run_serve(tier, dedupe, *, mode, dry_run, port):

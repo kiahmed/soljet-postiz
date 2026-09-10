@@ -89,13 +89,13 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
 
     ctx = bundle.context or {}
 
-    # 1b. Simmer (Facades): a per-product Cloud Run screenshot service snaps the
-    #     live board crop for this ticker. Always the image for a simmer_api
-    #     post — wins over every ladder step below, on any channel.
+    # 1b. Simmer (Facades): the per-product Cloud Run screenshot service is the
+    #     ONLY image source for a simmer_api post. It either snaps the live board
+    #     crop or the post goes out text-only — never the KG-graph / LLM ladder
+    #     below (wrong content, and slow).
     if bundle.source_type == "simmer_api":
         snap = _simmer_snap(tier, bundle, ctx)
-        if snap:
-            return [snap]
+        return [snap] if snap else []
 
     # 2. Deep-link funnel — when a deep link was injected into the post text
     #    and the tier opts in to LET_PLATFORM_RENDER_LINK_CARD (default true),

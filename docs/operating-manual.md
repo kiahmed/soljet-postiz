@@ -335,11 +335,18 @@ Some products don't drain a daily backlog — they post on an upstream event, so
 they have **no `channels.conf` row and no scheduler target**. **Simmer**
 (Facades) is the first: its engine publishes ticker state-change events to a
 GCP Pub/Sub topic and a dedicated Cloud Run service (`simmer-poster`,
-`bin/simmer_poster.py`) consumes them and posts via the Postiz API — it
-terminates on Cloud Run, nothing runs on this box. `POSTING_CADENCE_DAILY="false"`
-in the tier.config marks such a product; `make post`/`--check`/`social-status`
-still see it (`make post TIER=simmer` works for a manual one-off). Full picture,
-GCP provisioning (`ops/simmer/deploy.sh`), and the local e2e: **`docs/simmer.md`**.
+`bin/simmer_poster.py --serve`, a **push** subscriber) consumes them and posts
+via the Postiz API — it terminates on Cloud Run, nothing runs on this box.
+`POSTING_CADENCE_DAILY="false"` in the tier.config marks such a product;
+`make post`/`--check`/`social-status` still see it (`make post TIER=simmer`
+works for a manual one-off).
+
+Locally you validate with a **pull** subscription instead: `make simmer-sub-local`
+then `make simmer-poster MODE=draft SUB=simmer-poster-sub-local`. The poster
+enriches each event from the read-only API when it can and otherwise posts a
+minimal text-only version from the event attributes — it never drops a
+state-change. Full picture, GCP provisioning (`ops/simmer/deploy.sh`), and the
+local e2e: **`docs/simmer.md`**.
 
 ---
 
