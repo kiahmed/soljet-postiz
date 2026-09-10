@@ -29,6 +29,11 @@
 #   Pub/Sub sub <product>-poster-sub   filter attributes.product="<product>",
 #               push -> <product>-poster, OIDC as facades-poster-sa
 #
+# CONFIG: GCP_PROJECT / GCP_REGION / GCP_SA_EMAIL / FACADES_EVENTS_TOPIC /
+# FACADES_RUNTIME_SA_ID / POSTIZ_API_KEY_SECRET resolve as
+#   explicit env var > repo-root .env > gcloud config / built-in default.
+# So a plain `.env` with GCP_PROJECT set is enough — no `gcloud config set`.
+#
 # PROVISIONING IDENTITY: market-agent-sa (the owner/deployer, $GCP_SA_EMAIL /
 # GOOGLE_APPLICATION_CREDENTIALS). Pass --activate to `gcloud auth
 # activate-service-account` with that key first; otherwise the active gcloud
@@ -42,21 +47,36 @@ ROOT="$(cd "$DIR/../.." && pwd)"
 cd "$ROOT"
 PY="$ROOT/.venv/bin/python3"; [ -x "$PY" ] || PY=python3
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-REGION="${GCP_REGION:-${GCP_SCHEDULER_REGION:-us-central1}}"
-TOPIC="${FACADES_EVENTS_TOPIC:-facades.ticker-events}"
+# Read one KEY from repo-root .env without sourcing it (values may hold #, quotes,
+# spaces). Same helper shape as ops/scheduler/run-daily.sh::envget.
+envget(){ [ -f .env ] || return 0; grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- \
+          | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's/\r$//' -e 's/[[:space:]]*$//'; }
+
+# Precedence for every setting: explicit env var > .env > gcloud config / default.
+PROJECT="${GCP_PROJECT:-$(envget GCP_PROJECT)}"
+PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+REGION="${GCP_REGION:-$(envget GCP_REGION)}"
+REGION="${REGION:-${GCP_SCHEDULER_REGION:-$(envget GCP_SCHEDULER_REGION)}}"
+REGION="${REGION:-us-central1}"
+TOPIC="${FACADES_EVENTS_TOPIC:-$(envget FACADES_EVENTS_TOPIC)}"
+TOPIC="${TOPIC:-facades.ticker-events}"
+
+[ -n "$PROJECT" ] || { echo "!! no project — set GCP_PROJECT in .env (or the env, or 'gcloud config set project')" >&2; exit 1; }
 
 # Shared runtime SA for ALL Facades products (not per-product).
-RUNTIME_SA_ID="${FACADES_RUNTIME_SA_ID:-facades-poster-sa}"
+RUNTIME_SA_ID="${FACADES_RUNTIME_SA_ID:-$(envget FACADES_RUNTIME_SA_ID)}"
+RUNTIME_SA_ID="${RUNTIME_SA_ID:-facades-poster-sa}"
 RUNTIME_SA="${RUNTIME_SA_ID}@${PROJECT}.iam.gserviceaccount.com"
 # Deployer / owner — provisions everything below.
-DEPLOYER_SA="${GCP_SA_EMAIL:-market-agent-sa@${PROJECT}.iam.gserviceaccount.com}"
+DEPLOYER_SA="${GCP_SA_EMAIL:-$(envget GCP_SA_EMAIL)}"
+DEPLOYER_SA="${DEPLOYER_SA:-market-agent-sa@${PROJECT}.iam.gserviceaccount.com}"
 
 SNAP_SVC="${PRODUCT}-snap"
 POSTER_SVC="${PRODUCT}-poster"
 SUB="${PRODUCT}-poster-sub"
 # Secret Manager ids the poster mounts.
-SECRET_POSTIZ="${POSTIZ_API_KEY_SECRET:-postiz-api-key}"
+SECRET_POSTIZ="${POSTIZ_API_KEY_SECRET:-$(envget POSTIZ_API_KEY_SECRET)}"
+SECRET_POSTIZ="${SECRET_POSTIZ:-postiz-api-key}"
 SECRET_TOKEN="${PRODUCT}-api-token"
 
 run(){ if [ "${DRY:-}" = 1 ]; then printf '  + %s\n' "$*"; else "$@"; fi; }
