@@ -1,3 +1,5 @@
 flask>=3.0.0
 gunicorn>=22.0.0
-# playwright itself is preinstalled in the base image (mcr.microsoft.com/playwright/python)
+# Must match the base image's bundled browsers (mcr.microsoft.com/playwright/python
+# :v1.47.0-jammy ships the Chromium binaries but NOT the pip module).
+playwright==1.47.0
