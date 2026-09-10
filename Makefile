@@ -6,7 +6,7 @@
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
-        simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
+        simmer-preflight simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
@@ -139,6 +139,9 @@ social-cache-update: ## Re-resolve matching entries live (usage: make social-cac
 # No scheduler: the Simmer engine publishes state-change events to Pub/Sub and
 # the poster (Cloud Run in prod) consumes them. These targets are for local
 # work. See ops/simmer/README.md.
+simmer-preflight:   ## Check every GCP + .env dependency for Simmer (green OK / red FAIL). ops/simmer/preflight.sh <product> for others.
+	@./ops/simmer/preflight.sh simmer
+
 simmer-e2e:         ## Full local e2e: Pub/Sub emulator + stubs + real Postiz DRAFTs [--keep]
 	@./ops/simmer/dev/run-e2e.sh $(if $(KEEP),--keep)
 

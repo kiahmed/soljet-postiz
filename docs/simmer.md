@@ -122,6 +122,8 @@ repo. Provisioning from **either** side must be safe to re-run:
 ## Deploy / update on GCP
 
 ```bash
+make simmer-preflight                    # check every GCP + .env dependency: green OK / red FAIL / yellow advisory
+                                        #   (ops/simmer/preflight.sh <product> for matrix/torque)
 make simmer-deploy DRY=1                 # print every gcloud command
 make simmer-deploy PART=--sa-only        # shared: topic facades.ticker-events + facades-poster-sa + IAM
 make simmer-deploy                       # + simmer-snap, simmer-poster, simmer-poster-sub (filtered push)
