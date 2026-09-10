@@ -171,12 +171,22 @@ deploy_poster(){
   # build via cloudbuild.yaml then deploy the image.
   gc builds submit "$ROOT" --config="$ROOT/ops/simmer/poster/cloudbuild.yaml" \
     --substitutions="_IMAGE=${img}"
+
+  # The tier.config resolves its channels from ${POSTIZ_INTEGRATION_ID_*_<P>} /
+  # ${LINKEDIN_ENABLED} — the container has no .env, so pass them through.
+  local P; P="$(echo "$PRODUCT" | tr '[:lower:]' '[:upper:]')"
+  local chan_env=""
+  for k in "POSTIZ_INTEGRATION_ID_LINKEDIN_${P}" "POSTIZ_INTEGRATION_ID_X_${P}" \
+           "POSTIZ_CUSTOMER_ID_${P}" LINKEDIN_ENABLED; do
+    v="$(envget "$k")"; [ -n "$v" ] && chan_env="${chan_env},${k}=${v}"
+  done
+
   gc run deploy "$POSTER_SVC" --region="$REGION" \
     --image="$img" \
     --no-allow-unauthenticated \
     --service-account="$RUNTIME_SA" \
     --memory=512Mi --cpu=1 --timeout=120 \
-    --set-env-vars="GCP_PROJECT=${PROJECT},SIMMER_PUBSUB_SUBSCRIPTION=${SUB},SIMMER_API_BASE=https://edge.facades.trade,SIMMER_SNAP_URL=${snap_url}/snap,POSTIZ_API_URL=https://dev.arboryx.ai,SIMMER_DEDUPE_COLLECTION=${PRODUCT}_poster_dedupe" \
+    --set-env-vars="GCP_PROJECT=${PROJECT},SIMMER_PUBSUB_SUBSCRIPTION=${SUB},SIMMER_API_BASE=https://edge.facades.trade,SIMMER_SNAP_URL=${snap_url}/snap,POSTIZ_API_URL=https://dev.arboryx.ai,SIMMER_DEDUPE_COLLECTION=${PRODUCT}_poster_dedupe${chan_env}" \
     --set-secrets="POSTIZ_API_KEY=${SECRET_POSTIZ}:latest,SIMMER_API_TOKEN=${SECRET_TOKEN}:latest"
   # Pub/Sub push (auth as RUNTIME_SA) invokes the poster:
   gc run services add-iam-policy-binding "$POSTER_SVC" --region="$REGION" \

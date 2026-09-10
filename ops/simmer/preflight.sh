@@ -96,8 +96,8 @@ done
 section "pub/sub"
 if gcq pubsub topics describe "$TOPIC" --format='value(name)' >/dev/null; then ok "topic $TOPIC"; else bad "topic $TOPIC" "make ${PRODUCT}-deploy PART=--sa-only  (or EdgeLane's provisioner)"; fi
 if gcq pubsub subscriptions describe "$SUB" --format='value(name)' >/dev/null; then
-  filt="$(gcq pubsub subscriptions describe "$SUB" --format='value(filter)')"
-  [ "$filt" = "attributes.product = \"${PRODUCT}\"" ] && ok "subscription $SUB" "push, filtered" \
+  filt="$(gcq pubsub subscriptions describe "$SUB" --format='value(filter)' | tr -d ' ')"
+  [ "$filt" = "attributes.product=\"${PRODUCT}\"" ] && ok "subscription $SUB" "push, filtered on product" \
     || warn "subscription $SUB" "filter is '${filt:-<none>}', expected attributes.product=\"${PRODUCT}\""
 else
   warn "subscription $SUB" "not created yet — make ${PRODUCT}-deploy PART=--pubsub-only (needs the poster service first)"
