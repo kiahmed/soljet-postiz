@@ -35,19 +35,34 @@ BLOCKS = ("card", "score", "gates", "sentiment", "evolution")
 
 
 def _oidc_token(audience: str) -> str | None:
-    """OIDC token for a private *.run.app endpoint, or None. Cached ~50 min."""
+    """OIDC identity token for a private *.run.app endpoint, or None. Cached ~50 min.
+
+    Works from either environment:
+      - Cloud Run / GCE  -> the metadata server (no key file; ADC)
+      - local            -> the GOOGLE_APPLICATION_CREDENTIALS service-account key
+    google.oauth2.id_token.fetch_id_token handles both; the explicit
+    service_account path is the fallback for older google-auth.
+    """
     hit = _ID_TOKEN_CACHE.get(audience)
     if hit and time.time() - hit[1] < 3000:
         return hit[0]
+    import google.auth.transport.requests as gar
+    req = gar.Request()
+    try:
+        from google.oauth2 import id_token as _idt
+        tok = _idt.fetch_id_token(req, audience)
+        _ID_TOKEN_CACHE[audience] = (tok, time.time())
+        return tok
+    except Exception:  # noqa: BLE001 — fall through to the key-file path
+        pass
     try:
         key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
         if not key or not os.path.isfile(key):
             return None
         from google.oauth2 import service_account
-        import google.auth.transport.requests as gar
         creds = service_account.IDTokenCredentials.from_service_account_file(
             key, target_audience=audience)
-        creds.refresh(gar.Request())
+        creds.refresh(req)
         _ID_TOKEN_CACHE[audience] = (creds.token, time.time())
         return creds.token
     except Exception:  # noqa: BLE001 — no creds/lib/network -> unauthenticated attempt
