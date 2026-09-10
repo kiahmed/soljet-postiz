@@ -162,11 +162,17 @@ deploy_snap(){
 
 deploy_poster(){
   echo "== Cloud Run: $POSTER_SVC =="
-  local snap_url
+  local snap_url img
   snap_url="$(gcloud run services describe "$SNAP_SVC" --project="$PROJECT" --region="$REGION" --format='value(status.url)' 2>/dev/null)"
   [ -n "$snap_url" ] || { snap_url="https://${SNAP_SVC}-REPLACE-uc.a.run.app"; echo "   ! $SNAP_SVC not deployed — SIMMER_SNAP_URL will need patching"; }
+  img="${REGION}-docker.pkg.dev/${PROJECT}/cloud-run-source-deploy/${POSTER_SVC}:latest"
+  # The poster Dockerfile COPYs bin/ src/ products/, so the build context must be
+  # the repo root — `run deploy --source` can't target a non-root Dockerfile, so
+  # build via cloudbuild.yaml then deploy the image.
+  gc builds submit "$ROOT" --config="$ROOT/ops/simmer/poster/cloudbuild.yaml" \
+    --substitutions="_IMAGE=${img}"
   gc run deploy "$POSTER_SVC" --region="$REGION" \
-    --source="$ROOT" --dockerfile="ops/simmer/poster/Dockerfile" \
+    --image="$img" \
     --no-allow-unauthenticated \
     --service-account="$RUNTIME_SA" \
     --memory=512Mi --cpu=1 --timeout=120 \

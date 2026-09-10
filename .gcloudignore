@@ -1,0 +1,21 @@
+# Keep `gcloud builds submit` uploads small. The simmer-poster image only needs
+# bin/ src/ products/ + ops/simmer/poster/. Everything heavy or secret is excluded.
+.git/
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/
+docs/
+auth/
+dev-utils/
+products/_shared/handles.json
+products/*/handles.yaml
+products/facades/facades_handles.yaml
+.claude/
+*.log
+errors.log
