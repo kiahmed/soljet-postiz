@@ -1,0 +1,42 @@
+# Facades — social handles across products (EXAMPLE / committed template)
+#
+# Source of truth is the Postiz DB Integration table (all rows linked via
+# Customer "Facades"). This file mirrors it for humans + tooling. The real file
+# is products/facades/facades_handles.yaml — gitignored, holds the live ids.
+# Copy this, fill the <...> from .env / the Postiz DB.
+#
+# All products share ONE X app (X_API_KEY) and ONE LinkedIn app
+# (LINKEDIN_CLIENT_ID) — the ids below only differ by which account was
+# authorized, never by app.
+
+umbrella_business: Facades
+postiz_customer_id: <POSTIZ_CUSTOMER_ID_SIMMER>   # Customer "Facades" — shared by all products
+x_app: X_API_KEY (.env)                            # OAuth 1.0a consumer key, shared
+linkedin_app: LINKEDIN_CLIENT_ID (.env)            # shared
+
+products:
+  simmer:
+    tier_config: simmer_tier.config
+    site: https://simmer.facades.trade
+    x:
+      handle: "@facades_simmer"
+      internal_id: "<X account id>"
+      postiz_integration_id: <POSTIZ_INTEGRATION_ID_X_SIMMER>
+      status: <connected|pending>
+    linkedin:
+      handle: "Simmer"
+      internal_id: "<LinkedIn org id>"
+      postiz_integration_id: <POSTIZ_INTEGRATION_ID_LINKEDIN_SIMMER>
+      status: <connected|pending>
+
+  matrix:
+    tier_config: matrix_tier.config        # (not onboarded yet)
+    site: https://matrix.facades.trade
+    x:        { handle: "@facades_matrix", internal_id: "<..>", postiz_integration_id: <..>, status: pending }
+    linkedin: { handle: "Matrix",          internal_id: "<..>", postiz_integration_id: <..>, status: pending }
+
+  torque:
+    tier_config: torque_tier.config        # (not onboarded yet)
+    site: https://torque.facades.trade
+    x:        { handle: "@facades_torque", internal_id: "<..>", postiz_integration_id: <..>, status: pending }
+    linkedin: { handle: "Torque",          internal_id: "<..>", postiz_integration_id: <..>, status: pending }

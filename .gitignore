@@ -2,8 +2,9 @@
 .env
 auth/
 .claude/
-# Real handles file holds live Postiz ids — commit handles.example.yaml instead
+# Real handles files hold live Postiz ids — commit the *.example.yaml instead
 products/arboryx.ai/handles.yaml
+products/facades/facades_handles.yaml
 
 # Logs
 *.log

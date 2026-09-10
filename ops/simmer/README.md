@@ -19,7 +19,7 @@ Simmer engine ──publish──▶ Pub/Sub topic  facades.ticker-events
                    /simmer/state/<SYM>?block=…     [data-snap="card"] on ?snap=1
                          │
                          ▼   Postiz public API  (draft|now)
-                   LinkedIn "Simmer"  +  X @facades_simmer (once authorized)
+                   LinkedIn "Simmer"  +  X @facades_simmer
                    Firestore dedupe guard  (symbol+day+state | event_id)
 ```
 
@@ -84,8 +84,10 @@ make simmer-poster MODE=draft SUB=simmer-poster-sub-local
    `simmer-poster`, `simmer-poster-sub` (filtered push). `SIMMER_SNAP_URL` is
    wired from the deployed `simmer-snap` URL automatically; re-run
    `--poster-only` if snap is deployed after the poster.
-5. **Postiz** — connect X `@facades_simmer`, create Customer "Simmer", fill
-   `POSTIZ_INTEGRATION_ID_X_SIMMER` / `POSTIZ_CUSTOMER_ID_SIMMER` in `.env`.
+5. **Postiz** — channels connected under Customer "Facades"; `.env` has
+   `POSTIZ_INTEGRATION_ID_{LINKEDIN,X}_SIMMER` + `POSTIZ_CUSTOMER_ID_SIMMER`.
+   Id mirror: `products/facades/facades_handles.yaml` (gitignored). Same X /
+   LinkedIn app as every Facades product.
 6. Verify: `python bin/daily.py --check` and `python bin/social-status.py --tier simmer`
    list Simmer per channel; publish a test event; confirm the post + the dedupe row.
 
