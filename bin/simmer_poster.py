@@ -240,8 +240,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
 
 
 # ----------------------------------------------------------------------- modes
-def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout):
-    sub = (tier.raw.get("SIMMER_PUBSUB_SUBSCRIPTION") or os.getenv("SIMMER_PUBSUB_SUBSCRIPTION") or "").strip()
+def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
+    sub = (sub or tier.raw.get("SIMMER_PUBSUB_SUBSCRIPTION")
+           or os.getenv("SIMMER_PUBSUB_SUBSCRIPTION") or "").strip()
     project = (tier.raw.get("SIMMER_PUBSUB_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
     if not sub or not project:
         _log("pull_misconfigured", subscription=sub, project=project)
@@ -304,6 +305,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="compose + snap, never call Postiz")
     ap.add_argument("--max", type=int, default=50, help="--pull: max messages")
     ap.add_argument("--timeout", type=int, default=30, help="--pull: seconds")
+    ap.add_argument("--sub", help="--pull: subscription name override "
+                    "(else SIMMER_PUBSUB_SUBSCRIPTION / tier.config)")
     ap.add_argument("--port", type=int, default=int(os.getenv("PORT", "8080")))
     args = ap.parse_args()
 
@@ -322,7 +325,7 @@ def main() -> int:
 
     if args.pull:
         return run_pull(tier, dedupe, mode=args.mode, dry_run=args.dry_run,
-                        max_msgs=args.max, timeout=args.timeout)
+                        max_msgs=args.max, timeout=args.timeout, sub=args.sub)
 
     # default: serve
     run_serve(tier, dedupe, mode=args.mode, dry_run=args.dry_run, port=args.port)

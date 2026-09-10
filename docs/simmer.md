@@ -50,6 +50,27 @@ make simmer-poster MODE=draft
 make simmer-e2e
 ```
 
+### Validate against REAL EdgeLane events (before the Cloud Run poster exists)
+
+EdgeLane already publishes to `facades.ticker-events` (`SIMMER_EVENTS_ENABLED=true`
+in `edgelane_market.config`). To confirm this side consumes them:
+
+```bash
+# 1. one-time: a PULL subscription on the real topic (refuses if the simmer
+#    tier isn't enabled — registered + a live channel id in .env)
+make simmer-sub-local                       # DRY=1 to print the gcloud calls
+
+# 2. EdgeLane: fire a real transition (from that repo)
+#    cd ../../EdgeLane && make simmer-fire-event STATE=READY   # or STATE=WATCH
+
+# 3. drain it here → a DRAFT lands on the Simmer LinkedIn channel in Postiz
+make simmer-poster MODE=draft SUB=simmer-poster-sub-local
+```
+
+`bin/simmer_poster.py` reads the event's `state` (`watch_entered`|`ready`) against
+`POST_ON_STATES`, and dedupes on EdgeLane's deterministic `event_id`
+(`SMR-<SYM>-<YYMMDD>-<expiryYYMMDD>-<state>`).
+
 ## What EdgeLane must provide (the upstream contract)
 
 Three things live in the **EdgeLane repo**, not here:
@@ -92,7 +113,12 @@ make simmer-deploy DRY=1                 # print every gcloud command
 make simmer-deploy PART=--sa-only        # shared: topic facades.ticker-events + facades-poster-sa + IAM
 make simmer-deploy                       # + simmer-snap, simmer-poster, simmer-poster-sub (filtered push)
 make simmer-deploy PART=--snap-only      # just re-deploy the screenshot service
+make simmer-deploy PART=--sub-local      # a PULL sub on the real topic for local validation
 ```
+
+Everything except `--sa-only` first checks the **tier is enabled** — registered
+in `_TIER_FILE_BY_ID` *and* with a live channel id in `.env` (refuses otherwise).
+You don't subscribe to the topic for a product that can't post.
 
 **Identity** (shared by every Facades product):
 - `market-agent-sa` (`$GCP_SA_EMAIL`) — the owner; runs `deploy.sh` / provisions.

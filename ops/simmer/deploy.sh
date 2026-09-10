@@ -3,7 +3,13 @@
 # but the identity + events topic are SHARED across all Facades products
 # (simmer, matrix, torque). Nothing here touches the robotics pipeline.
 #
-#   ops/simmer/deploy.sh <product> [--sa-only|--snap-only|--poster-only|--pubsub-only|all]
+#   ops/simmer/deploy.sh <product> [--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local|all]
+#
+# Everything except --sa-only first checks the <product> tier is ENABLED
+# (registered in _TIER_FILE_BY_ID and with a live channel id in .env) — you
+# don't subscribe to the topic for a product that can't post.
+# --sub-local makes a PULL subscription on the real topic so you can validate
+# against live EdgeLane events before the Cloud Run poster exists.
 #
 # Shared, created once (idempotent):
 #   Pub/Sub topic        facades.ticker-events
@@ -29,10 +35,12 @@
 # account is used. DRY=1 prints every command instead of running it.
 set -uo pipefail
 
-PRODUCT="${1:?usage: deploy.sh <product> [--sa-only|--snap-only|--poster-only|--pubsub-only|all]}"
+PRODUCT="${1:?usage: deploy.sh <product> [--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local|all]}"
 MODE="${2:-all}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
+cd "$ROOT"
+PY="$ROOT/.venv/bin/python3"; [ -x "$PY" ] || PY=python3
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${GCP_REGION:-${GCP_SCHEDULER_REGION:-us-central1}}"
@@ -92,6 +100,32 @@ ensure_sa(){
   done
 }
 
+# --- precondition: the product tier must be enabled --------------------
+require_tier_ready(){
+  echo "== Precondition: '$PRODUCT' tier enabled =="
+  "$PY" - "$PRODUCT" <<'PY'
+import sys
+sys.path.insert(0, ".")
+from bin._common import load_dotenv, integration_ids_for
+from src.lib.config_loader import known_tiers, load_tier
+tid = sys.argv[1]
+load_dotenv()
+if tid not in known_tiers():
+    sys.exit(f"  x '{tid}' is not a registered tier (add it to _TIER_FILE_BY_ID). Known: {known_tiers()}")
+try:
+    t = load_tier(tid)
+except Exception as e:
+    sys.exit(f"  x load_tier('{tid}') failed: {e}")
+iids = integration_ids_for(t)
+if not iids:
+    sys.exit(f"  x '{tid}' has no live channels — set its POSTIZ_INTEGRATION_ID_* in .env "
+             f"(LINKEDIN_ENABLED too, for LinkedIn).")
+print(f"  ok  {tid}: {len(iids)} channel(s) -> {iids}")
+PY
+  local rc=$?
+  [ $rc -eq 0 ] || { echo "  refusing to provision the subscription for a disabled product."; exit 3; }
+}
+
 # --- per product --------------------------------------------------------
 deploy_snap(){
   echo "== Cloud Run: $SNAP_SVC =="
@@ -143,12 +177,33 @@ deploy_pubsub(){
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/pubsub.subscriber"
 }
 
+# PULL subscription on the shared topic — for validating against real EdgeLane
+# events with `make simmer-poster` before the Cloud Run poster exists. Same
+# per-product filter. Idempotent.
+deploy_sub_local(){
+  local sub_local="${SUB}-local"
+  echo "== Pub/Sub PULL subscription (local test): $sub_local =="
+  ensure_topic
+  gc pubsub subscriptions create "$sub_local" \
+    --topic="$TOPIC" \
+    --message-filter="attributes.product=\"${PRODUCT}\"" \
+    --ack-deadline=60 --message-retention-duration=1h 2>/dev/null \
+    || echo "   (exists)"
+  # whoever runs `make simmer-poster` locally (GOOGLE_APPLICATION_CREDENTIALS
+  # = the deployer SA) needs to pull it:
+  gc pubsub subscriptions add-iam-policy-binding "$sub_local" \
+    --member="serviceAccount:${DEPLOYER_SA}" --role="roles/pubsub.subscriber" 2>/dev/null || true
+  echo
+  echo "   drain it:  SIMMER_PUBSUB_SUBSCRIPTION=$sub_local make simmer-poster MODE=draft"
+}
+
 case "$MODE" in
   --sa-only)     ensure_topic; ensure_sa ;;
-  --snap-only)   deploy_snap ;;
-  --poster-only) deploy_poster ;;
-  --pubsub-only) deploy_pubsub ;;
-  all)           ensure_topic; ensure_sa; deploy_snap; deploy_poster; deploy_pubsub ;;
+  --sub-local)   require_tier_ready; deploy_sub_local ;;
+  --snap-only)   require_tier_ready; deploy_snap ;;
+  --poster-only) require_tier_ready; deploy_poster ;;
+  --pubsub-only) require_tier_ready; deploy_pubsub ;;
+  all)           require_tier_ready; ensure_topic; ensure_sa; deploy_snap; deploy_poster; deploy_pubsub ;;
   *) echo "unknown mode $MODE"; exit 2 ;;
 esac
 echo "done."

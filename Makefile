@@ -6,13 +6,14 @@
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
+        simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
 KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS \
-              KEEP MODE EVENT PART
+              KEEP MODE EVENT PART SUB
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -141,8 +142,11 @@ social-cache-update: ## Re-resolve matching entries live (usage: make social-cac
 simmer-e2e:         ## Full local e2e: Pub/Sub emulator + stubs + real Postiz DRAFTs [--keep]
 	@./ops/simmer/dev/run-e2e.sh $(if $(KEEP),--keep)
 
-simmer-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1]
-	$(PYTHON) bin/simmer_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+simmer-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1] [SUB=<subscription>]
+	$(PYTHON) bin/simmer_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run) $(if $(SUB),--sub $(SUB))
+
+simmer-sub-local:   ## Create a PULL subscription on the real facades.ticker-events topic for local validation (DRY=1 to print)
+	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer --sub-local
 
 simmer-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
 	$(PYTHON) bin/simmer_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
@@ -150,7 +154,7 @@ simmer-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [M
 simmer-event:       ## Process one inline event (usage: make simmer-event EVENT='{"product":"simmer",...}') [MODE=] [DRY=1]
 	$(PYTHON) bin/simmer_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
 
-simmer-deploy:      ## Provision Simmer's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--snap-only|--poster-only|--pubsub-only]
+simmer-deploy:      ## Provision Simmer's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
 	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
