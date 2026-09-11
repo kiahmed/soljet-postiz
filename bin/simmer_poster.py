@@ -311,8 +311,10 @@ def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
     return 1 if errors else 0
 
 
-def run_serve(tier, dedupe, *, mode, dry_run, port):
-    from flask import Flask, request, jsonify
+def build_app(tier, dedupe, *, mode, dry_run):
+    """The Flask app for Pub/Sub PUSH delivery. Used by gunicorn (create_app,
+    the Cloud Run entrypoint) and by `--serve` (local)."""
+    from flask import Flask, jsonify, request
     app = Flask(__name__)
 
     @app.get("/healthz")
@@ -328,8 +330,25 @@ def run_serve(tier, dedupe, *, mode, dry_run, port):
         code = 500 if r.get("status") == "error" else 204
         return (jsonify(r), 200) if code == 200 else ("", code)
 
-    _log("serve_start", port=port, mode=mode, dry_run=dry_run)
-    app.run(host="0.0.0.0", port=port)
+    return app
+
+
+def create_app():
+    """gunicorn app factory:  gunicorn 'bin.simmer_poster:create_app()'
+    Config comes from the environment (Cloud Run --set-env-vars / --set-secrets):
+    SIMMER_POSTER_MODE (default 'now'), SIMMER_POSTER_DRY_RUN."""
+    load_dotenv()
+    tier = load_tier(TIER_ID)
+    dedupe = Dedupe(tier)
+    mode = os.environ.get("SIMMER_POSTER_MODE", "now")
+    dry_run = os.environ.get("SIMMER_POSTER_DRY_RUN", "").lower() in ("1", "true", "yes")
+    _log("serve_start", entrypoint="gunicorn", mode=mode, dry_run=dry_run)
+    return build_app(tier, dedupe, mode=mode, dry_run=dry_run)
+
+
+def run_serve(tier, dedupe, *, mode, dry_run, port):
+    _log("serve_start", entrypoint="flask", port=port, mode=mode, dry_run=dry_run)
+    build_app(tier, dedupe, mode=mode, dry_run=dry_run).run(host="0.0.0.0", port=port)
 
 
 def main() -> int:

@@ -12,7 +12,12 @@ COPY bin/ bin/
 COPY src/ src/
 COPY products/ products/
 
-ENV PYTHONPATH=/app PORT=8080
-# --mode now: a live event => a live post. The engine only publishes real state
-# changes, and the Firestore dedupe guard makes retries idempotent.
-CMD ["python", "bin/simmer_poster.py", "--serve", "--mode", "now"]
+ENV PYTHONPATH=/app PORT=8080 SIMMER_POSTER_MODE=now
+# gunicorn (not Flask's dev server) so app logs reach Cloud Logging on stdout.
+# 1 worker (Firestore/dedupe state is per-process), threads for concurrent
+# pushes, long timeout because a cold simmer-snap call can take ~30s.
+# SIMMER_POSTER_MODE=now: a live event => a live post; the Firestore dedupe guard
+# makes Pub/Sub retries idempotent.
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "-w", "1", "--threads", "8", "-t", "300", \
+     "--access-logfile", "-", "--error-logfile", "-", \
+     "bin.simmer_poster:create_app()"]
