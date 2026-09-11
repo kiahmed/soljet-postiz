@@ -341,12 +341,99 @@ via the Postiz API — it terminates on Cloud Run, nothing runs on this box.
 `make post`/`--check`/`social-status` still see it (`make post TIER=simmer`
 works for a manual one-off).
 
+**The end-to-end flow (Simmer, and the mold every Facades product follows):**
+
+```
+EdgeLane engine                 GCP                                    Postiz
+────────────────                ─────────────────────────              ──────
+ticker crosses a gate    ──►  Pub/Sub topic                       
+(watch_entered | ready)        facades.ticker-events
+                                attrs: product, symbol, state,          
+                                expiry, event_id                        
+                                       │
+                                       │ push, filtered
+                                       │ attributes.product="simmer"
+                                       ▼
+                                simmer-poster (Cloud Run)
+                                bin/simmer_poster.py --serve
+                                 1. dedupe on event_id (Firestore)
+                                 2. GET /simmer/state/<SYM> (EdgeLane
+                                    read-only API) → full card, or a
+                                    minimal text-only card if it 404s
+                                 3. compose_simmer() → deterministic text
+                                       │
+                                       │ POST {symbol,expiry,state}
+                                       ▼
+                                simmer-snap (Cloud Run, headless Chromium)
+                                screenshots the live board's
+                                [data-snap="card"] crop → PNG
+                                       │
+                                       │ text + image
+                                       ▼
+                                simmer-poster ──► Postiz public API   ──►  X
+                                (the "tunnel": POST /api/public/v1/         @facades_simmer
+                                 upload then /posts, bearer = postiz-        + Simmer LinkedIn
+                                 api-key secret)                             page, PUBLISHED
+```
+
+Nothing here runs on this box — the whole chain lives on Cloud Run. A
+transition fires, and within seconds both channels have the post with the
+board snapshot and a deep link back to `simmer.facades.trade/?symbol=<SYM>`.
+
 Locally you validate with a **pull** subscription instead: `make simmer-sub-local`
 then `make simmer-poster MODE=draft SUB=simmer-poster-sub-local`. The poster
 enriches each event from the read-only API when it can and otherwise posts a
 minimal text-only version from the event attributes — it never drops a
 state-change. Full picture, GCP provisioning (`ops/simmer/deploy.sh`), and the
 local e2e: **`docs/simmer.md`**.
+
+#### Day-2 ops — Simmer (same pattern for Matrix/Torque, swap the name)
+
+```bash
+# health check — GCP + .env wiring, green OK / red FAIL per dependency
+make simmer-preflight
+
+# what's deployed: the two Cloud Run services + the two subscriptions
+gcloud run services list --project marketresearch-agents --region us-central1 \
+  --filter="metadata.name~simmer" --format="table(metadata.name,status.url,status.latestReadyRevisionName)"
+gcloud pubsub subscriptions list --project marketresearch-agents \
+  --filter="name~simmer" --format="table(name,pushConfig.pushEndpoint)"
+# (no Cloud Functions, no Scheduler jobs for an event-driven product — it's
+# push-only, so both those lists come back empty for `simmer`)
+
+# tail the poster's app logs (structured JSON: serve_start, processed, posted,
+# enrich_minimal) — needs PYTHONUNBUFFERED=1 + gunicorn --capture-output,
+# both already set in ops/simmer/poster/Dockerfile
+gcloud logging read 'resource.type=cloud_run_revision AND
+  resource.labels.service_name=simmer-poster' --project marketresearch-agents \
+  --limit 50 --format=json
+
+# check a specific post's outcome straight from the Postiz DB (state should be
+# PUBLISHED with an empty error column; ERROR + the error text tells you why
+# a channel rejected it — e.g. X's one-cashtag-per-post rule)
+docker exec postiz-postgres psql -U postiz-user -d postiz-db-local -c \
+  "select id, \"integrationId\", state, error, left(content,120) from \"Post\" where id='<post_id>';"
+
+# redeploy just the poster after a tier.config / code change (fast — no need
+# to touch simmer-snap or the subscription)
+make simmer-deploy PART=--poster-only
+
+# fire one real event end-to-end from EdgeLane and watch it land
+docker exec edgelane-backend python /srv/tools/simmer_fire_event.py --state ready --symbol <SYM>
+
+# local pull-test subscription: create it, drain it, or tear it down
+make simmer-deploy PART=--sub-local          # create simmer-poster-sub-local
+make simmer-poster MODE=draft SUB=simmer-poster-sub-local
+gcloud pubsub subscriptions delete simmer-poster-sub-local --project marketresearch-agents
+```
+
+**Why `facades-poster-sa` needs no project-wide Pub/Sub role:** the live
+subscription is a **push** subscription (`pushConfig.oidcToken.serviceAccountEmail
+= facades-poster-sa`) — Pub/Sub's own service agent mints the OIDC token and
+calls the Cloud Run URL directly, gated only by `run.invoker` on the target
+service. `pubsub.subscriber` only matters for a **pull** subscriber, which is
+what the local `*-poster-sub-local` path uses, run with your own gcloud
+credentials, not the runtime SA.
 
 ---
 
