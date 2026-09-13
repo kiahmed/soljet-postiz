@@ -99,17 +99,25 @@ Three things live in the **EdgeLane repo**, not here:
    `GET /simmer/state/<SYM>?block=card|score|gates|sentiment|evolution`,
    bearer-token auth (the token is in Secret Manager as `simmer-api-token`).
    Plain HTTPS — no GCP SA involved.
-3. **`?snap=1` render mode** in `simmer/ui` — a `[data-snap="card"]` wrapper
-   around the board crop, nav/toasts hidden, per-symbol `og:image` +
-   click-through to `/?symbol=<SYM>`. `simmer-snap` (deployed from here)
-   screenshots it.
+3. **`GET /simmer/snap/<SYM>`** — a dedicated, server-rendered standalone HTML
+   card (`app/simmer_snap.py::render_snap_card`, inline CSS, no SPA), same
+   bearer `simmer-api-token`. **Not** the live `simmer.facades.trade` SPA —
+   that page sits behind a user-login session a headless browser doesn't
+   have, so a screenshot of it only ever captures the sign-in dialog.
+   `simmer-snap` (deployed from here) sets the bearer header, GETs this
+   endpoint, and screenshots its `[data-snap="card"]` crop. See EdgeLane's
+   `docs/simmer.md` › "Snapshot render endpoint (simmer-snap)" for the full
+   contract (the SPA's old `?snap=1` mode still exists but is superseded for
+   the poster by this endpoint).
 
 Until 1–3 exist, the pipeline below deploys cleanly but has nothing to consume.
 
 ## Idempotent provisioning (both sides)
 
-The topic and `facades-poster-sa` are **shared** and may be created by either
-repo. Provisioning from **either** side must be safe to re-run:
+`facades-poster-sa` is **shared** across every Facades product and may be
+created by any of their repos. `facades.ticker-events` is Simmer's own topic
+(products after Simmer get their own topic each instead — see "Adding Matrix /
+Torque" below). Provisioning from **either** side must be safe to re-run:
 
 - `ops/simmer/deploy.sh` already is — `create … || (exists)` for the topic/SA,
   `create … || update …` for the subscription, and `add-iam-policy-binding` is
@@ -142,26 +150,31 @@ You don't subscribe to the topic for a product that can't post.
   `pubsub.subscriber` per sub, `run.invoker` per service, `secretAccessor` on
   `postiz-api-key` + `<product>-api-token`, `datastore.user` (project).
 
-`simmer-poster-sub` carries the filter `attributes.product="simmer"` — that is the
-per-product isolation. Matrix/Torque each get their own `<name>-poster-sub` on the
-**same topic**, reusing `facades-poster-sa`; an event for one product is never
-delivered to another's poster.
+`simmer-poster-sub` carries the filter `attributes.product="simmer"` — that was
+Simmer's per-product isolation while the plan was still "one shared topic."
+As of Matrix, the standard changed: **each product after Simmer gets its own
+topic and its own poster/snap containers**, reusing only the two service
+accounts and the project's Pub/Sub service — see below.
 
 ## Adding Matrix / Torque
 
-Matrix's own spec — its event/screenshot design and, importantly, the parts of
-`ops/simmer/deploy.sh` that are still Simmer-specific despite being
-`$PRODUCT`-parameterized on the surface — lives in **[matrix_integration.md](matrix_integration.md)**.
-The steps below are the generic shape; that doc is the concrete plan.
+Matrix's own spec — its event/screenshot design, its own topic, and why its
+deploy script is a **fork**, not a reuse of `ops/simmer/deploy.sh` — lives in
+**[matrix_integration.md](matrix_integration.md)**. The steps below are the
+generic shape; that doc is the concrete plan, and Torque should follow the
+same fork-per-product pattern Matrix does.
 
 1. `products/facades/<name>_tier.config` + `<name>_context.md`
    (copy `simmer_tier.config`; change `TIER_ID`, channel/customer env vars,
    `PARENT_URL_TEMPLATE`, `POSTING_PURPOSE`, `POST_ON_STATES`).
 2. One line in `src/lib/config_loader.py::_TIER_FILE_BY_ID`.
-3. Create the `<name>-api-token` secret; `ops/simmer/deploy.sh <name>` — its own
-   `<name>-snap`, `<name>-poster`, `<name>-poster-sub`. Reuses the topic and
-   `facades-poster-sa` (adds only that product's `run.invoker` + `secretAccessor`).
+3. Its own Pub/Sub topic (`facades.<name>-events`), its own
+   `ops/<name>/{poster,snap}/` containers and `ops/<name>/deploy.sh` (forked
+   from `ops/simmer/deploy.sh`, not a flag on it — see `matrix_integration.md`
+   §Build prerequisites for why). Create the `<name>-api-token` secret;
+   `ops/<name>/deploy.sh <name>` stands up `<name>-snap`, `<name>-poster`,
+   `<name>-poster-sub`. Reuses `facades-poster-sa` and `market-agent-sa` only.
 4. Connect its Postiz channels; add `*_<NAME>` ids to `.env`.
 
-Nothing about `simmer` — or the shared topic/SA — needs to change to add another
-product.
+Nothing about `simmer` — its topic, its SA bindings, its containers — needs to
+change to add another product.

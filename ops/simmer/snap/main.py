@@ -3,20 +3,26 @@
 
 POST /snap  {symbol, expiry?, state?}  ->  image/png
 
-Loads  {SIMMER_SITE}/?symbol=<SYM>&snap=1  in headless Chromium, waits for the
-board, and screenshots the crop element (SNAP_SELECTOR, default
-[data-snap="card"] — the ticker's GEX walls + gate checklist + readiness +
-news-sentiment score). The Simmer UI's ?snap=1 mode is expected to:
-  - authenticate via SNAP_TOKEN (header X-Snap-Token) or render public snapshot data
-  - hide nav / toasts (reuse the existing data-no-capture convention)
-  - expose SNAP_SELECTOR wrapping just the board crop
-  - set a per-symbol og:image + a click-through <a> to /?symbol=<SYM>
+Loads  {SIMMER_API_BASE}/simmer/snap/<SYM>  in headless Chromium and
+screenshots the crop element (SNAP_SELECTOR, default [data-snap="card"]).
+That endpoint is a dedicated, server-rendered standalone HTML card (EdgeLane's
+`app/simmer_snap.py::render_snap_card`, inline CSS, no SPA) — NOT the live
+`simmer.facades.trade` dashboard, which sits behind a user-login session a
+headless browser doesn't have and would only ever screenshot the sign-in
+dialog. See EdgeLane's `docs/simmer.md` › "Snapshot render endpoint
+(simmer-snap)" for the authoritative contract.
 
-Private service: deploy with --no-allow-unauthenticated; callers (simmer-poster,
-the postiz box) present a Google OIDC identity token.
+Auth: the endpoint requires `Authorization: Bearer {SIMMER_API_TOKEN}` — the
+same read-only token the poster uses against the Simmer API (Secret Manager
+`simmer-api-token`), set as a header before navigating (a plain page-open
+carries no token).
 
-Env: SIMMER_SITE (https://simmer.facades.trade), SNAP_SELECTOR, SNAP_TOKEN,
-     SNAP_VIEWPORT (1200x900), SNAP_TIMEOUT_MS (15000), PORT (8080).
+Private service: deploy with --no-allow-unauthenticated; callers (simmer-poster)
+present a Google OIDC identity token.
+
+Env: SIMMER_API_BASE (https://edge.facades.trade), SIMMER_API_TOKEN,
+     SNAP_SELECTOR ([data-snap="card"]), SNAP_VIEWPORT (1200x900),
+     SNAP_TIMEOUT_MS (15000), PORT (8080).
 """
 from __future__ import annotations
 
@@ -25,9 +31,9 @@ import time
 
 from flask import Flask, request, Response, jsonify
 
-SITE = os.environ.get("SIMMER_SITE", "https://simmer.facades.trade").rstrip("/")
+API_BASE = os.environ.get("SIMMER_API_BASE", "https://edge.facades.trade").rstrip("/")
+API_TOKEN = os.environ.get("SIMMER_API_TOKEN", "")
 SELECTOR = os.environ.get("SNAP_SELECTOR", '[data-snap="card"]')
-TOKEN = os.environ.get("SNAP_TOKEN", "")
 VIEWPORT = os.environ.get("SNAP_VIEWPORT", "1200x900")
 TIMEOUT_MS = int(os.environ.get("SNAP_TIMEOUT_MS", "15000"))
 
@@ -45,7 +51,7 @@ def snap() -> Response:
     symbol = str(body.get("symbol") or "").upper()
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-    url = f"{SITE}/?symbol={symbol}&snap=1"
+    url = f"{API_BASE}/simmer/snap/{symbol}"
     vw, vh = (int(x) for x in VIEWPORT.split("x"))
     t0 = time.time()
     try:
@@ -53,8 +59,8 @@ def snap() -> Response:
         with sync_playwright() as p:
             browser = p.chromium.launch(args=["--no-sandbox"])
             page = browser.new_page(viewport={"width": vw, "height": vh}, device_scale_factor=2)
-            if TOKEN:
-                page.set_extra_http_headers({"X-Snap-Token": TOKEN})
+            if API_TOKEN:
+                page.set_extra_http_headers({"Authorization": f"Bearer {API_TOKEN}"})
             page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
             try:
                 el = page.wait_for_selector(SELECTOR, timeout=TIMEOUT_MS, state="visible")

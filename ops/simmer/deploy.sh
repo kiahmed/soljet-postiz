@@ -149,12 +149,18 @@ PY
 # --- per product --------------------------------------------------------
 deploy_snap(){
   echo "== Cloud Run: $SNAP_SVC =="
+  # Screenshots EdgeLane's dedicated render endpoint (GET
+  # $SIMMER_API_BASE/simmer/snap/<SYM>, bearer $SIMMER_API_TOKEN), NOT the
+  # live simmer.facades.trade dashboard — that's behind a user-login session
+  # a headless browser doesn't have. See EdgeLane docs/simmer.md ›
+  # "Snapshot render endpoint (simmer-snap)".
   gc run deploy "$SNAP_SVC" --region="$REGION" \
     --source="$DIR/snap" \
     --no-allow-unauthenticated \
     --service-account="$RUNTIME_SA" \
     --memory=1Gi --cpu=1 --concurrency=1 --timeout=90 \
-    --set-env-vars="SIMMER_SITE=https://${PRODUCT}.facades.trade,SNAP_SELECTOR=[data-snap=\"card\"]"
+    --set-env-vars="SIMMER_API_BASE=https://edge.facades.trade,SNAP_SELECTOR=[data-snap=\"card\"]" \
+    --set-secrets="SIMMER_API_TOKEN=${SECRET_TOKEN}:latest"
   # poster (same SA) calls snap:
   gc run services add-iam-policy-binding "$SNAP_SVC" --region="$REGION" \
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/run.invoker"

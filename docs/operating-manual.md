@@ -11,7 +11,8 @@ Related docs (don't duplicate — cross-reference):
   Simmer): no scheduler, Pub/Sub → Cloud Run poster. §5.3 here is the pointer.
 - **[matrix_integration.md](matrix_integration.md)** — the next Facades product
   (strategy-grid trading), not yet onboarded — event/screenshot design + open
-  build items, reusing Simmer's shared topic/SA/pattern.
+  build items; reuses Simmer's two service accounts, but gets its own
+  Pub/Sub topic and its own poster/snap containers.
 - **[linkedin-mentions.md](linkedin-mentions.md)** — how @mentions become real
   LinkedIn tags (slug → org URN) and the collision guard.
 - **catalyst-knowledge-graph `docs/handle-resolution-spec.md`** — the upstream

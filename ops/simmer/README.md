@@ -15,9 +15,11 @@ Simmer engine ──publish──▶ Pub/Sub topic  facades.ticker-events
                        Cloud Run  simmer-poster   (bin/simmer_poster.py --serve)
                          │  pull full card / blocks     │  POST {symbol,expiry}
                          ▼  GET edge.facades.trade      ▼  Cloud Run  simmer-snap
-                   read-only Simmer API            headless-Chromium crop of
-                   /simmer/state/<SYM>?block=…     [data-snap="card"] on ?snap=1
-                         │
+                   read-only Simmer API            headless-Chromium, bearer
+                   /simmer/state/<SYM>?block=…      auth, crop [data-snap="card"]
+                         │                          of GET /simmer/snap/<SYM>
+                         │                          (server-rendered card, NOT
+                         │                          the login-gated SPA)
                          ▼   Postiz public API  (draft|now)
                    LinkedIn "Simmer"  +  X @facades_simmer
                    Firestore dedupe guard  (symbol+day+state | event_id)
@@ -33,7 +35,7 @@ Simmer engine ──publish──▶ Pub/Sub topic  facades.ticker-events
 | `src/lib/recipes.py::compose_simmer` | deterministic post text (`watch_entered` / `ready`) |
 | `src/lib/imagery.py::_simmer_snap` | fetches the board crop from `SIMMER_SNAP_URL` |
 | `bin/simmer_poster.py` | the subscriber/publisher — `--serve` (Cloud Run), `--pull` (local), `--event` (test) |
-| `ops/simmer/snap/` | `simmer-snap` Cloud Run service (Playwright) |
+| `ops/simmer/snap/` | `simmer-snap` Cloud Run service (Playwright; screenshots EdgeLane's `/simmer/snap/<SYM>` render endpoint, bearer auth) |
 | `ops/simmer/poster/Dockerfile` | `simmer-poster` Cloud Run image |
 | `ops/simmer/deploy.sh` | one-command GCP provisioning per product |
 | `ops/simmer/dev/` | local e2e: Pub/Sub emulator + API/snap stubs + `run-e2e.sh` |
@@ -67,9 +69,9 @@ make simmer-poster MODE=draft SUB=simmer-poster-sub-local
 ## Go live (GCP)
 
 1. **EdgeLane** — engine publishes state-change events to `facades.ticker-events`;
-   add `GET /simmer/ready` and `GET /simmer/state/<SYM>?block=card|score|gates|sentiment|evolution`
-   (service-token auth); add `?snap=1` render mode to `simmer/ui`
-   (`[data-snap="card"]` wrapper, nav hidden, per-symbol og:image + click-through).
+   exposes `GET /simmer/ready`, `GET /simmer/state/<SYM>?block=card|score|gates|sentiment|evolution`,
+   and `GET /simmer/snap/<SYM>` (server-rendered standalone card, `[data-snap="card"]`,
+   inline CSS — not the login-gated SPA), all bearer `simmer-api-token`.
 2. **Secrets** — create `postiz-api-key` and `simmer-api-token` in Secret Manager.
 3. **Identity** (shared by all Facades products — Simmer/Matrix/Torque):
    - `market-agent-sa` (`$GCP_SA_EMAIL`, the owner) *provisions* everything.
@@ -91,9 +93,7 @@ make simmer-poster MODE=draft SUB=simmer-poster-sub-local
 6. Verify: `python bin/daily.py --check` and `python bin/social-status.py --tier simmer`
    list Simmer per channel; publish a test event; confirm the post + the dedupe row.
 
-Matrix / Torque reuse the topic **and** `facades-poster-sa` — `deploy.sh <name>`
-adds only that product's `run.invoker` + `secretAccessor` (on `<name>-api-token`)
-bindings.
-
-Matrix / Torque later: add `products/facades/<name>_tier.config`, a line in
-`_TIER_FILE_BY_ID`, and `ops/simmer/deploy.sh <name>`.
+Matrix / Torque reuse `facades-poster-sa` and the shared GCP project's Pub/Sub
+service, but get **their own topic** each (`facades.matrix-events`, etc.) and
+their own poster/snap Cloud Run services — deployed from their own
+`ops/<name>/deploy.sh`, not this one. See `docs/matrix_integration.md`.

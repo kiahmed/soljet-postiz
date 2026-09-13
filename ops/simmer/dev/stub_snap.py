@@ -3,8 +3,10 @@
 
   POST /snap   {symbol, expiry, state}  ->  image/png  (a mock board crop)
 
-The real service runs headless Chromium against simmer.facades.trade/?symbol=..&snap=1
-and screenshots [data-snap="card"]. This stub just renders a labelled card with
+The real service runs headless Chromium against EdgeLane's dedicated render
+endpoint (GET edge.facades.trade/simmer/snap/<SYM>, bearer SIMMER_API_TOKEN —
+NOT the login-gated simmer.facades.trade SPA) and screenshots [data-snap="card"].
+This stub just renders a labelled card with
 Pillow so the poster's image path (fetch -> cache -> upload -> attach) is
 exercised end to end. Run:  python ops/simmer/dev/stub_snap.py [--port 8898]
 """
