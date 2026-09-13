@@ -30,7 +30,7 @@ products:
       status: <connected|pending>
 
   matrix:
-    tier_config: matrix_tier.config        # (not onboarded yet)
+    tier_config: matrix_tier.config        # (not onboarded yet — see docs/matrix_integration.md)
     site: https://matrix.facades.trade
     x:        { handle: "@facades_matrix", internal_id: "<..>", postiz_integration_id: <..>, status: pending }
     linkedin: { handle: "Matrix",          internal_id: "<..>", postiz_integration_id: <..>, status: pending }

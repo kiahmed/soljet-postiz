@@ -57,7 +57,7 @@ python bin/simmer_poster.py --event '{"product":"simmer","symbol":"MSTR","state"
 ```
 
 Against the **real** topic + a live EdgeLane (no stubs) — see
-`docs/simmer.md` › "Validate against REAL EdgeLane events":
+`docs/simmer_integration.md` › "Validate against REAL EdgeLane events":
 ```bash
 make simmer-sub-local
 make -C ../../EdgeLane simmer-fire-event STATE=READY

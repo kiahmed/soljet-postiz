@@ -149,6 +149,11 @@ delivered to another's poster.
 
 ## Adding Matrix / Torque
 
+Matrix's own spec — its event/screenshot design and, importantly, the parts of
+`ops/simmer/deploy.sh` that are still Simmer-specific despite being
+`$PRODUCT`-parameterized on the surface — lives in **[matrix_integration.md](matrix_integration.md)**.
+The steps below are the generic shape; that doc is the concrete plan.
+
 1. `products/facades/<name>_tier.config` + `<name>_context.md`
    (copy `simmer_tier.config`; change `TIER_ID`, channel/customer env vars,
    `PARENT_URL_TEMPLATE`, `POSTING_PURPOSE`, `POST_ON_STATES`).

@@ -7,8 +7,11 @@ cloud. Keep it current: when a step changes, edit it here in the same PR.
 Related docs (don't duplicate — cross-reference):
 - **[daily-posting.md](daily-posting.md)** — the day-to-day human routine, where
   hand-post images/text live, troubleshooting.
-- **[simmer.md](simmer.md)** — the first **event-driven** product (Facades ·
+- **[simmer_integration.md](simmer_integration.md)** — the first **event-driven** product (Facades ·
   Simmer): no scheduler, Pub/Sub → Cloud Run poster. §5.3 here is the pointer.
+- **[matrix_integration.md](matrix_integration.md)** — the next Facades product
+  (strategy-grid trading), not yet onboarded — event/screenshot design + open
+  build items, reusing Simmer's shared topic/SA/pattern.
 - **[linkedin-mentions.md](linkedin-mentions.md)** — how @mentions become real
   LinkedIn tags (slug → org URN) and the collision guard.
 - **catalyst-knowledge-graph `docs/handle-resolution-spec.md`** — the upstream
@@ -129,7 +132,7 @@ branches) or use the default.
 | `cards_json` | a local `cards.json` KG artifact (`_PATH`) |
 | `duckdb` | local KG DuckDB (`_PATH`) |
 | `firestore_inherited` | reuse the parent's Firestore, filtered (`_INHERIT_FROM`, `_FILTER_CATEGORY`) |
-| `simmer_api` | EdgeLane read-only API — event-driven products (Simmer); `_BASE_URL`, `_TOKEN_ENV`. See `docs/simmer.md`. |
+| `simmer_api` | EdgeLane read-only API — event-driven products (Simmer); `_BASE_URL`, `_TOKEN_ENV`. See `docs/simmer_integration.md`. |
 
 Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 
@@ -385,7 +388,7 @@ then `make simmer-poster MODE=draft SUB=simmer-poster-sub-local`. The poster
 enriches each event from the read-only API when it can and otherwise posts a
 minimal text-only version from the event attributes — it never drops a
 state-change. Full picture, GCP provisioning (`ops/simmer/deploy.sh`), and the
-local e2e: **`docs/simmer.md`**.
+local e2e: **`docs/simmer_integration.md`**.
 
 #### Day-2 ops — Simmer (same pattern for Matrix/Torque, swap the name)
 
