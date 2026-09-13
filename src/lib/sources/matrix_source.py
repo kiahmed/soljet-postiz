@@ -120,6 +120,18 @@ class MatrixAPI(Source):
         if not isinstance(raw, dict) or not raw:
             raise KeyError(f"matrix_api: no state for '{symbol}' ({item_id})")
         card = self._to_card(raw)
+        # The plain-language hint + bias-trust state live in the separate
+        # "bias" block, not "pick" — best-effort fetch, never lets a bias
+        # hiccup block a pick_selected/daily_recap post.
+        try:
+            bias_raw = self._get(f"{self.state_path}/{urllib.parse.quote(symbol)}", {"block": "bias"})
+            trust = ((bias_raw or {}).get("data") or {}).get("trust") or {}
+            card["hint_text"] = trust.get("hint_text")
+            card["bias_trust_state"] = trust.get("state")
+            card["win_rate"] = trust.get("win_rate")
+            card["graded"] = trust.get("graded")
+        except Exception:  # noqa: BLE001
+            pass
         card["card_id"] = item_id
         return card
 
@@ -133,34 +145,55 @@ class MatrixAPI(Source):
         r = self._get(f"{self.state_path}/{urllib.parse.quote(symbol.upper())}", {"block": block})
         return r if isinstance(r, dict) else {"value": r}
 
-    # ---- mapping (provisional — see module docstring) -------------------
+    # ---- mapping ----------------------------------------------------------
     @staticmethod
     def _to_card(raw: dict) -> dict:
-        """EdgeLane's future Matrix engine output -> the card dict recipes.py
-        expects. Field names guessed from the two UI screenshots this spec was
-        built from (strategy name, composite, tags, Net/MaxP/MaxL/POP/EV) —
-        reconcile against the real payload once /matrix/state/<SYM> exists."""
-        env = raw.get("env") if isinstance(raw.get("env"), dict) else raw
-        sym = str(env.get("symbol") or raw.get("symbol") or "").upper()
-        computed = env.get("computed_at") or raw.get("computed_at") or ""
-        pick = env.get("pick") or raw.get("pick") or {}
-        card_id = make_card_id(sym, computed)
+        """EdgeLane's real `?block=pick` response -> the card dict recipes.py
+        expects. Confirmed against the live endpoint 2026-09-13:
+
+            {"symbol": "SPX", "block": "pick", "data": {
+                "expiration": "2026-09-14", "spot": 7656.98,
+                "pick": {"strategy": "bear_call", "name": "Bear Call Spread",
+                         "short": "Bear Call", "composite_score": 86.1,
+                         "composite_verdict": {"label": "tradeable on limit", ...},
+                         "structure_text": "Short 7680.0C / Long 7720.0C",
+                         "net_premium": 7.625, "max_profit": 7.625,
+                         "max_loss": 32.375, "pop_pct": 68.5, "ev": -4.97,
+                         "health": "healthy", "liquidity": "high", ...}}}
+
+        There is no `tags` array — `health`/`liquidity`/`composite_verdict.label`
+        are reconstructed into the same HEALTHY / LIQ HIGH / TRADEABLE ON LIMIT
+        vocabulary compose_matrix()'s tag-clause lookup already expects, so no
+        change was needed there. `hint_text` isn't in this block — get() fills
+        it in separately from the `bias` block."""
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        sym = str(raw.get("symbol") or data.get("symbol") or "").upper()
+        pick = data.get("pick") or {}
+        verdict = pick.get("composite_verdict") or {}
+        tags = []
+        if pick.get("health"):
+            tags.append(str(pick["health"]).upper())
+        if pick.get("liquidity"):
+            tags.append(f"LIQ {str(pick['liquidity']).upper()}")
+        if verdict.get("label"):
+            tags.append(str(verdict["label"]).upper())
         return {
-            "card_id": card_id,
-            "id": card_id,
+            "card_id": None,   # get() overwrites with the caller's item_id
+            "id": None,
             "symbol": sym,
-            "strategy": pick.get("strategy") or pick.get("name"),
-            "composite": pick.get("composite"),
-            "tags": list(pick.get("tags") or []),
-            "net_prem": pick.get("net_prem"),
-            "max_p": pick.get("max_p"),
-            "max_l": pick.get("max_l"),
-            "pop": pick.get("pop"),
+            "strategy": pick.get("short") or pick.get("name") or pick.get("strategy"),
+            "composite": pick.get("composite_score"),
+            "tags": tags,
+            "net_prem": pick.get("net_premium"),
+            "max_p": pick.get("max_profit"),
+            "max_l": pick.get("max_loss"),
+            "pop": pick.get("pop_pct"),
             "ev": pick.get("ev"),
-            "hint_text": pick.get("hint_text") or raw.get("hint_text"),
-            "date": str(computed)[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "computed_at": computed,
-            "headline": f"${sym} — engine pick: {pick.get('strategy') or pick.get('name') or ''}".strip(),
+            "structure_text": pick.get("structure_text"),
+            "expiry": data.get("expiration") or "",
+            "hint_text": None,  # filled by get() from the bias block
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "headline": f"${sym} — engine pick: {pick.get('short') or pick.get('name') or ''}".strip(),
             "entities": [{
                 "name": sym,
                 "x_handle": f"${sym}" if sym else None,
