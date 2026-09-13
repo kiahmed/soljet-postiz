@@ -32,7 +32,12 @@ import time
 from flask import Flask, request, Response, jsonify
 
 API_BASE = os.environ.get("SIMMER_API_BASE", "https://edge.facades.trade").rstrip("/")
-API_TOKEN = os.environ.get("SIMMER_API_TOKEN", "")
+# .strip(): Secret Manager values created via `printf ... | gcloud secrets
+# create --data-file=-` from a shell heredoc/echo often carry a trailing
+# newline; Playwright's set_extra_http_headers rejects any header value
+# containing one ("Invalid header value"), so strip defensively rather than
+# rely on every secret being created byte-perfect.
+API_TOKEN = os.environ.get("SIMMER_API_TOKEN", "").strip()
 SELECTOR = os.environ.get("SNAP_SELECTOR", '[data-snap="card"]')
 VIEWPORT = os.environ.get("SNAP_VIEWPORT", "1200x900")
 TIMEOUT_MS = int(os.environ.get("SNAP_TIMEOUT_MS", "15000"))
