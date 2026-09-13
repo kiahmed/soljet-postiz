@@ -48,6 +48,13 @@ def build_source(ds, tier) -> Source:
             ready_path=ds.params.get("ready_path", "/simmer/ready"),
             state_path=ds.params.get("state_path", "/simmer/state"),
         )
+    if ds.type == "matrix_api":
+        from .matrix_source import MatrixAPI
+        return MatrixAPI(
+            base_url=ds.params.get("base_url", ""),
+            token_env=ds.params.get("token_env", "MATRIX_API_TOKEN"),
+            state_path=ds.params.get("state_path", "/matrix/state"),
+        )
     raise ValueError(f"Unknown source type: {ds.type}")
 
 

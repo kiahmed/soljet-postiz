@@ -7,6 +7,7 @@
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
         simmer-preflight simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
+        matrix-preflight matrix-poster matrix-sub-local matrix-serve matrix-event matrix-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
@@ -159,6 +160,27 @@ simmer-event:       ## Process one inline event (usage: make simmer-event EVENT=
 
 simmer-deploy:      ## Provision Simmer's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
 	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer $(PART)
+
+# ---- Facades · Matrix (event-driven product; bin/matrix_poster.py) ------
+# Own topic (facades.matrix-events), own poster/snap containers — NOT a
+# --product flag on the Simmer targets above. See docs/matrix_integration.md.
+matrix-preflight:   ## Check every GCP + .env dependency for Matrix (green OK / red FAIL)
+	@./ops/matrix/preflight.sh matrix
+
+matrix-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1] [SUB=<subscription>]
+	$(PYTHON) bin/matrix_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run) $(if $(SUB),--sub $(SUB))
+
+matrix-sub-local:   ## Create a PULL subscription on the real facades.matrix-events topic for local validation (DRY=1 to print)
+	@DRY=$(DRY) ./ops/matrix/deploy.sh matrix --sub-local
+
+matrix-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
+	$(PYTHON) bin/matrix_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+matrix-event:       ## Process one inline event (usage: make matrix-event EVENT='{"product":"matrix",...}') [MODE=] [DRY=1]
+	$(PYTHON) bin/matrix_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+matrix-deploy:      ## Provision Matrix's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
+	@DRY=$(DRY) ./ops/matrix/deploy.sh matrix $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,

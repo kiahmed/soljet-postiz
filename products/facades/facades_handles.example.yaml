@@ -30,10 +30,10 @@ products:
       status: <connected|pending>
 
   matrix:
-    tier_config: matrix_tier.config        # (not onboarded yet — see docs/matrix_integration.md)
-    site: https://matrix.facades.trade
-    x:        { handle: "@facades_matrix", internal_id: "<..>", postiz_integration_id: <..>, status: pending }
-    linkedin: { handle: "Matrix",          internal_id: "<..>", postiz_integration_id: <..>, status: pending }
+    tier_config: matrix_tier.config        # onboarded on the Postiz side; see docs/matrix_integration.md
+    site: https://matrix.facades.trade     # EdgeLane's engine/API side not built yet — bin/matrix_poster.py enriches from a minimal card
+    x:        { handle: "@facades_matrix", internal_id: "<..>", postiz_integration_id: <..>, status: connected }
+    linkedin: { handle: "Matrix",          internal_id: "<..>", postiz_integration_id: <..>, status: connected }
 
   torque:
     tier_config: torque_tier.config        # (not onboarded yet)
