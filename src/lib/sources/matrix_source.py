@@ -120,18 +120,26 @@ class MatrixAPI(Source):
         if not isinstance(raw, dict) or not raw:
             raise KeyError(f"matrix_api: no state for '{symbol}' ({item_id})")
         card = self._to_card(raw)
-        # The plain-language hint + bias-trust state live in the separate
-        # "bias" block, not "pick" — best-effort fetch, never lets a bias
-        # hiccup block a pick_selected/daily_recap post.
-        try:
-            bias_raw = self._get(f"{self.state_path}/{urllib.parse.quote(symbol)}", {"block": "bias"})
-            trust = ((bias_raw or {}).get("data") or {}).get("trust") or {}
-            card["hint_text"] = trust.get("hint_text")
-            card["bias_trust_state"] = trust.get("state")
-            card["win_rate"] = trust.get("win_rate")
-            card["graded"] = trust.get("graded")
-        except Exception:  # noqa: BLE001
-            pass
+        # All 6 post moments need data beyond "pick" (bias/grid/win_eval/walls)
+        # — fetch every block best-effort and stash it on the card, so
+        # compose_matrix() can serve any state from one get() regardless of
+        # which one the event actually asked for. A block hiccup never blocks
+        # the others (each is its own try/except, card[key] just ends up {}).
+        for block in ("bias", "grid", "win_eval", "walls"):
+            try:
+                r = self._get(f"{self.state_path}/{urllib.parse.quote(symbol)}", {"block": block})
+                block_data = (r or {}).get("data") or {}
+                # "grid" nests the actual 8-strategy dict one level further —
+                # {"expiration":..., "grid": {bull_put:{...}, ...}} — every
+                # other block's useful content is directly under "data".
+                card[block] = block_data.get("grid") or {} if block == "grid" else block_data
+            except Exception:  # noqa: BLE001
+                card[block] = {}
+        trust = (card.get("bias") or {}).get("trust") or {}
+        card["hint_text"] = trust.get("hint_text")
+        card["bias_trust_state"] = trust.get("state")
+        card["win_rate"] = trust.get("win_rate")
+        card["graded"] = trust.get("graded")
         card["card_id"] = item_id
         return card
 

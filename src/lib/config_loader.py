@@ -18,6 +18,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTS_ROOT = REPO_ROOT / "products"
 
 _ENV_LOADED = False
+
+
+def _first_token(val: str) -> str:
+    """The first shell-style token of `val`, treating a trailing ' # comment'
+    as a real comment (stripped) rather than more value — same rule a shell
+    applies. A genuinely unterminated quote in the VALUE itself (not a
+    comment) still raises ValueError, same as plain shlex.split() did."""
+    lexer = shlex.shlex(val, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    tokens = list(lexer)
+    return tokens[0] if tokens else ""
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}|\$([A-Z0-9_]+)")
 
 
@@ -115,8 +127,15 @@ def _parse_config(path: Path) -> dict:
         if not m:
             continue
         key, val = m.group(1), m.group(2).strip()
-        # shlex handles "quoted values with spaces"
-        val = shlex.split(val)[0] if val else ""
+        # shlex handles "quoted values with spaces" AND a trailing inline
+        # "# comment" the same way a shell would — plain shlex.split() doesn't
+        # know '#' is a comment marker, so any stray apostrophe anywhere in a
+        # trailing comment (even one that never touches the value itself)
+        # used to raise "No closing quotation" and crash load_tier() entirely
+        # (bit matrix_tier.config twice while writing it). A configured
+        # shlex.shlex with commenters="#" treats '#' as a comment start only
+        # outside quotes, so `KEY="a # b"` still keeps the literal '#'.
+        val = _first_token(val) if val else ""
         # expand ${VAR} refs so secret/operational ids stay in .env, not git
         out[key] = _expand_env(val)
     return out

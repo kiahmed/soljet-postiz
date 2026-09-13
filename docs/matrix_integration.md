@@ -1,22 +1,27 @@
 # Matrix (Facades) — integration spec
 
-**Status: not yet onboarded on the Postiz side.** Matrix has no tier.config,
-no Postiz channels connected, no Cloud Run services. But unlike a from-scratch
-product, **the Matrix engine and UI already exist in EdgeLane** — the strategy
-grid, the bias engine, the win/loss evaluator, the dealer-exposure walls —
-none of that is hypothetical (`market/backend/app/{strategy_engine,bias_engine,
-evaluator,dealer_exposures,accuracy}.py`, `market/ui/`). What's missing is the
-**Postiz-facing layer**: an event publisher, a read-only API, and snapshot
-render endpoints — exactly the three things Simmer's engine had to add on top
-of its own already-working readiness logic. That EdgeLane-side spec now has
-its own doc: **`EdgeLane/docs/matrix_events_update.md`** (written for Postiz
-first; the engine builds against it when ready). This file is the Postiz-side
-half of the same plan.
+**Status: live as of 2026-09-13.** Both sides shipped: this repo's tier,
+poster, and snap service, and EdgeLane's event publisher (`app/matrix_events.py`
++ `app/matrix_signals.py`), read-only API (`app/routes/matrix.py`), and
+snapshot endpoints (`app/matrix_snap.py`) — see `EdgeLane/docs/
+matrix_events_update.md`'s "Status — shipped" table. All 7 states
+(`POST_ON_STATES`) are live, all 5 snap views resolve, and `bin/matrix_poster.py`
+composes from real engine data (not the minimal-card fallback) for a tracked
+symbol. Matrix currently covers **SPX and NDX only** — not arbitrary tickers
+like Simmer.
 
-Once real work starts, promote the finished pieces into
-`products/facades/matrix_tier.config` and this file becomes the operator's
-reference — same arc as **[simmer_integration.md](simmer_integration.md)**,
-which *is* live and is the pattern this whole doc reuses, **with one
+The Matrix engine and UI predate this integration — the strategy grid, the
+bias engine, the win/loss evaluator, the dealer-exposure walls were already
+working (`market/backend/app/{strategy_engine,bias_engine,evaluator,
+dealer_exposures,accuracy}.py`, `market/ui/`). What this doc and
+`matrix_events_update.md` added was the **Postiz-facing layer**: an event
+publisher, a read-only API, and snapshot render endpoints — the same three
+things Simmer's engine had to add on top of its own already-working
+readiness logic.
+
+This file stays the operator's reference — same arc as
+**[simmer_integration.md](simmer_integration.md)**, which *is* live and is
+the pattern this whole doc reuses, **with one
 deliberate difference: Matrix does not share Simmer's topic or its poster/snap
 containers** (§GCP plan) — only the two service accounts and the GCP project's
 Pub/Sub service are shared.
@@ -36,15 +41,15 @@ pair, deterministic no-LLM copy, Firestore dedupe — is the same mold.
 
 | | Simmer | Matrix |
 |---|---|---|
-| Subject | one ticker's credit-spread readiness | one ticker's 8-strategy grid, scored + ranked each session |
-| States that must post | 2, both mandatory (`watch_entered`, `ready`) | 6, most **conditional on the engine judging the moment worth it** (§Gating) |
+| Subject | any ticker's credit-spread readiness | **SPX/NDX only** (as of this writing) — one 8-strategy grid, scored + ranked each session |
+| States that must post | 2, both mandatory (`watch_entered`, `ready`) | 7 (6 moments — bias splits into 2), all live; the engine's own significance rules are the real gate, a min-gap floor on 3 of them is the safety net (§Gating) |
 | Trigger | ticker crosses a readiness gate | engine pick changes, bias agrees/disagrees, win-rate crosses a notable bar, session opens, digest cadence, daily recap |
-| Poster | `simmer-poster` (`bin/simmer_poster.py`) | `matrix-poster` (`bin/matrix_poster.py`, new — see §Build prerequisites) |
-| Screenshot | 1 crop (`[data-snap="card"]`, bearer-authed render endpoint) | 5 named crops, same bearer-authed render pattern (§Screenshots) |
-| Data source | EdgeLane read-only API, 1 endpoint | EdgeLane read-only API, per-moment endpoints (engine pick, bias, win-eval, grid) |
+| Poster | `simmer-poster` (`bin/simmer_poster.py`) | `matrix-poster` (`bin/matrix_poster.py`) |
+| Screenshot | 1 crop (`[data-snap="card"]`, bearer-authed render endpoint) | 5 named crops, same bearer-authed render pattern (§Screenshots) — all 5 confirmed live |
+| Data source | EdgeLane read-only API, 1 endpoint | EdgeLane read-only API, 5 blocks (`pick`/`bias`/`grid`/`win_eval`/`walls`) fetched per event |
 | Pub/Sub topic | `facades.ticker-events`, `attributes.product="simmer"` | **its own topic**, `facades.matrix-events` — deliberately NOT shared with Simmer (§GCP plan) |
-| Containers | `simmer-poster` + `simmer-snap` | `matrix-poster` + `matrix-snap` — **their own images**, not the Simmer ones re-pointed |
-| Config | `products/facades/simmer_tier.config` | `products/facades/matrix_tier.config` (placeholder already reserved in `facades_handles.example.yaml` / `config_loader.py`, not filled in) |
+| Containers | `simmer-poster` + `simmer-snap` | `matrix-poster` + `matrix-snap` — their own images, deployed and live |
+| Config | `products/facades/simmer_tier.config` | `products/facades/matrix_tier.config` — live |
 
 ## Reference screenshots (from the actual Matrix UI)
 
@@ -65,25 +70,20 @@ Two panes the user shared ground the two most important crops:
   *and* the "here's a flag explained in plain English" shot the brainstorm
   asked for separately. One crop, two post moments (§Post moments).
 
-The other three moments map onto engine internals that already exist, even
-though no screenshot shows their UI yet:
+The other three moments map onto the same engine internals — all confirmed
+live via `GET /matrix/snap/<SYM>?view=<name>` as of 2026-09-13:
 
 - **Win-evaluation grid** → `evaluator.py`'s per-symbol `consec_wins`/
   `consec_losses`/`regime_alert_active` counters and `accuracy.py`'s rolling
-  `win_rate`/`graded` fields — real, already computed every ~30s. Only the
-  crop is missing.
-- **Walls chip** → confirmed a genuinely separate, standalone chip (not a
-  relabeling of anything) — `dealer_exposures.py`'s `key_levels: {call_wall,
-  put_wall, vex_wall, tex_wall}` is exactly this data. Only the crop is
-  missing.
+  `win_rate`/`graded` fields.
+- **Walls chip** → `dealer_exposures.py`'s `key_levels: {call_wall, put_wall,
+  vex_wall, tex_wall, gex_wall}`.
 - **Bias chip** (align/diverge vs. the engine pick) → `accuracy.py`'s
   bias-trust `state` field itself (`in_sync` | `low_conf` | `calibrating` |
-  `paused`) already *is* this signal. Only the crop is missing.
+  `paused`).
 
-None of that blocks the spec — it just means `pick_selected` and
-`daily_recap` can go live first (their crops exist today via the engine-pick
-chip), the rest ship as their `data-snap` views land in the Matrix UI. Full
-detail on wiring each of these into an event: `EdgeLane/docs/matrix_events_update.md`.
+Full detail on how each was wired into an event: `EdgeLane/docs/
+matrix_events_update.md`'s "Status — shipped" table.
 
 ## Screenshot capture (`matrix-snap`)
 
@@ -95,8 +95,8 @@ endpoint instead) — generalized to multiple named views since Matrix has
 multiple crops:
 
 ```
-POST /snap  {"symbol": "NVDA", "view": "engine_pick" | "strategy_grid" |
-                                        "bias_chip" | "walls_chip" | "win_eval_grid"}
+POST /snap  {"symbol": "SPX", "view": "engine_pick" | "strategy_grid" |
+                                       "bias_chip" | "walls_chip" | "win_eval_grid"}
 → matrix-snap sets Authorization: Bearer $MATRIX_API_TOKEN
 → GET https://edge.facades.trade/matrix/snap/<SYM>?view=<view>
    (standalone HTML card, inline CSS, no SPA, no user session —
@@ -123,14 +123,12 @@ by the `view` param, in `matrix-snap`'s own `main.py` — a fork of
 | `win_rate_notable` | a recovery pattern (loss streak → win) or a high-win-frequency stretch on the eval grid — **not a daily obligation** | **engine only** — the poster has no way to know a pick is "winning"; see §Gating and `matrix_events_update.md` for the exact rule | `win_eval_grid` | reactive, optional, no cadence floor or ceiling — fires only when the pattern matches |
 | `session_open` | start of trading day | **engine** — skip silently if there's nothing worth a walls-chip that day | `walls_chip` | at most 1/day |
 | `grid_digest` | periodic full-grid share | **engine** — fires only when enough of the grid changed since the last digest | `strategy_grid` | target ~2×/week, engine-timed, not a cron |
-| `daily_recap` | best/worst composite-score pick of the day | **engine** — plain-language "why," using the same tags shown in the `engine_pick` crop (BROKEN/HEALTHY/LIQ HIGH/MARGINAL/POP/EV) | `engine_pick` (best) [+ a second crop for the worst pick once one exists] | at most 1/day |
+| `daily_recap` | best/worst composite-score pick of the day | **engine** — plain-language "why," using the same tags shown in the `engine_pick` crop (BROKEN/HEALTHY/LIQ HIGH/MARGINAL/POP/EV); the worst pick is a real second line now (lowest `composite_score` in the `grid` block), not a TBD | `engine_pick` (best) | at most 1/day (`MATRIX_MIN_GAP_HOURS_DAILY_RECAP=20`) |
 
-Every row publishes to Matrix's **own** topic (`facades.matrix-events`,
-`attributes.product="matrix"`) — a new filtered sub (`matrix-poster-sub`) on
-that topic, not a share of Simmer's. Start with just `pick_selected` and
-`daily_recap` live (their crops exist); add the rest as their UI views land —
-the same phased pattern Simmer itself used (`POST_ON_STATES="watch_entered,ready"`
-was the whole list on day one too).
+All 7 states are live in `POST_ON_STATES` as of 2026-09-13 — every row
+publishes to Matrix's **own** topic (`facades.matrix-events`,
+`attributes.product="matrix"`), on the filtered sub `matrix-poster-sub`, not
+a share of Simmer's.
 
 ## Gating & anti-spam philosophy
 
@@ -161,12 +159,16 @@ call inside the sweep best-effort and non-blocking (mirror `simmer_events.py`'s
 own posture — log and swallow, never raise) so a transient publish failure
 can never stall grading. Full rule detail: `matrix_events_update.md`.
 
-The one thing worth adding on the poster side, as a safety net (not a
-substitute for engine judgment): a per-state minimum gap
-(`MATRIX_MIN_GAP_HOURS_<STATE>` or similar in the tier config) so a bug in the
-engine's significance logic can't turn into a wall of posts. That's insurance,
-not the primary gate — same relationship `POST_ON_STATES` already has to the
-engine's own `state` choice.
+**Shipped**: a per-state minimum gap (`MATRIX_MIN_GAP_HOURS_<STATE>` in
+`matrix_tier.config` — `SESSION_OPEN`/`GRID_DIGEST`/`DAILY_RECAP` only;
+reactive states have no floor since they already only fire on a real
+transition) is a safety net, not a substitute for engine judgment, so a bug
+in the engine's significance logic can't turn into a wall of posts. Enforced
+in `bin/matrix_poster.py::process_event()` via `Dedupe.last_state_time()` /
+`mark_state_time()` — same relationship `POST_ON_STATES` already has to the
+engine's own `state` choice: insurance, not the primary gate. A state that's
+gapped out is `status: "skipped"`, acked (204) like any other skip — Pub/Sub
+doesn't hold or retry it.
 
 Net effect, in the brainstorm's own words: not tweet-heavy, a drift of
 genuinely informative posts, each one earning its place by showing something
@@ -205,7 +207,7 @@ of each per project). The **topic** and **every container** are Matrix's own
 — this was an explicit correction to the first draft of this doc, which had
 assumed Matrix would reuse Simmer's topic and images.
 
-| Component | Simmer (live) | Matrix (planned) | Reuse? |
+| Component | Simmer (live) | Matrix (live) | Reuse? |
 |---|---|---|---|
 | Pub/Sub topic | `facades.ticker-events` | **`facades.matrix-events`** — its own topic | ❌ new topic, deliberately not shared |
 | Push subscription | `simmer-poster-sub`, filter `attributes.product="simmer"` | `matrix-poster-sub`, filter `attributes.product="matrix"`, on the new topic | new sub, new topic |
@@ -217,107 +219,60 @@ assumed Matrix would reuse Simmer's topic and images.
 | Source adapter | `SimmerAPI` (`src/lib/sources/simmer_source.py`) | `MatrixAPI` (new; per-moment endpoints, not one) | new code |
 | Recipe/copy | `compose_simmer()` | `compose_matrix()` (§Text/copy) | new code |
 | Secret | `simmer-api-token` | `matrix-api-token` | new secret, same pattern |
-| Tier config | `products/facades/simmer_tier.config` | `products/facades/matrix_tier.config` | new file — placeholder line already exists (commented) in `_TIER_FILE_BY_ID`, `facades_handles.example.yaml` |
-| Postiz channels | LinkedIn Simmer page, X `@facades_simmer` — both live | LinkedIn "Matrix" page, X `@facades_matrix` — handles confirmed, connection still **pending** | must connect in Postiz before `matrix-poster` can publish anything |
+| Tier config | `products/facades/simmer_tier.config` | `products/facades/matrix_tier.config` | live, `_TIER_FILE_BY_ID` registered |
+| Postiz channels | LinkedIn Simmer page, X `@facades_simmer` — both live | LinkedIn "Matrix" page, X `@facades_matrix` — both live | connected, ids in `.env` |
 | Deploy script | `ops/simmer/deploy.sh` | **`ops/matrix/deploy.sh`** — its own script (§Build prerequisites: forked, not a generalized shared script) | ❌ forked, not shared |
 | Preflight | `ops/simmer/preflight.sh simmer` | `ops/matrix/preflight.sh matrix` (a copy, same checks re-pointed at Matrix's own topic/services) | fork alongside `deploy.sh`, same checks |
 
-Illustrative `matrix_tier.config` skeleton (not created yet — for shape only):
-
-```
-TIER_ID="matrix"
-TIER_NAME="Matrix"
-DATA_SOURCE_1_TYPE="matrix_api"
-DATA_SOURCE_1_BASE_URL="${MATRIX_API_BASE}"          # e.g. https://edge.facades.trade (or its own host)
-DATA_SOURCE_1_TOKEN_ENV="MATRIX_API_TOKEN"
-
-MATRIX_PUBSUB_PROJECT="${GCP_PROJECT}"
-MATRIX_PUBSUB_TOPIC="facades.matrix-events"          # Matrix's own topic — not Simmer's
-MATRIX_PUBSUB_SUBSCRIPTION="${MATRIX_PUBSUB_SUBSCRIPTION}"   # matrix-poster-sub
-POST_ON_STATES="pick_selected,daily_recap"           # start narrow; widen as UI crops land
-
-CHANNEL_LINKEDIN="${POSTIZ_INTEGRATION_ID_LINKEDIN_MATRIX}"
-CHANNEL_X_PRIMARY="${POSTIZ_INTEGRATION_ID_X_MATRIX}"
-POSTIZ_CUSTOMER_ID="${POSTIZ_CUSTOMER_ID_MATRIX}"      # default: same "Facades" customer as Simmer
-
-IMAGERY_POLICY_X="attach"
-IMAGERY_POLICY_LINKEDIN="attach"
-CARD_RENDER_PROVIDER="matrix_snap"
-MATRIX_SNAP_URL="${MATRIX_SNAP_URL}"
-
-HANDLE_INJECTION="false"                             # same lesson as Simmer's cashtag bug —
-CASHTAGS_ENABLED="false"                             # compose_matrix() should own its own tags/handles,
-ENTITY_TAG_MODE="cashtag_only"                        # not the per-channel dispatcher, unless a real
-MAX_ENTITY_TAGS="0"                                   # need for it shows up.
-
-PARENT_URL_TEMPLATE="https://matrix.facades.trade/?symbol={symbol}"
-POSTING_CADENCE_DAILY="false"                         # event-driven, no scheduler row
-```
+The real config is `products/facades/matrix_tier.config` — read it directly
+rather than a copy here going stale; same shape as `simmer_tier.config` plus
+`MATRIX_MIN_GAP_HOURS_{SESSION_OPEN,GRID_DIGEST,DAILY_RECAP}` (§Gating).
 
 ## Build prerequisites (what has to exist before this can go live)
 
 **EdgeLane side — the engine/UI already exist; the Postiz-facing layer does
 not.** Full spec: `EdgeLane/docs/matrix_events_update.md`. Summary:
-1. A `matrix_events.py` publisher (mirrors `simmer_events.py`) publishing the
-   6 states in §Post moments to **`facades.matrix-events`** (its own topic,
-   not Simmer's), with a deterministic `event_id` per (symbol, day, state) —
-   e.g. `MTX-<SYM>-<YYMMDD>-<state>`.
-2. A read-only API (`edge.facades.trade` or Matrix's own host) exposing the
-   data each crop/copy template needs per moment — Simmer has one endpoint
-   (`GET /simmer/state/<SYM>`); Matrix needs one per moment (engine pick,
-   bias, win-eval, grid summary), grounded in `evaluator.py` / `accuracy.py` /
-   `dealer_exposures.py` state that already exists.
-3. `GET /matrix/snap/<SYM>?view=<name>` — a dedicated, bearer-authed,
-   server-rendered standalone HTML card per view (mirrors Simmer's corrected
-   `/simmer/snap/<SYM>` — **never** the live, login-gated SPA), with a
-   `[data-snap="<view>"]` wrapper per crop. `engine_pick` and `strategy_grid`
-   can be built from the two screenshots already in hand; `bias_chip`,
-   `walls_chip`, `win_eval_grid` render the data already computed by
-   `accuracy.py` / `dealer_exposures.py` / the eval grid respectively.
-4. `win_rate_notable`'s exact firing rule (recovery pattern / high-frequency
-   pattern), and the decision to compute it inline in the existing evaluator
-   sweep rather than a separate watcher (§Gating) — written up in
-   `matrix_events_update.md` for the engine team to build against.
+All shipped 2026-09-13:
 
-**This repo — new code, deliberately not a fork/flag of Simmer's:**
-1. `bin/matrix_poster.py` — copy `bin/simmer_poster.py`'s skeleton
-   (`TIER_ID`, dedupe, `process_event`, `run_pull`/`run_serve`/`create_app`),
-   swap in `MatrixAPI` / `compose_matrix()` / `source_type="matrix_api"` /
-   `facades.matrix-events`.
-2. `ops/matrix/poster/` + `ops/matrix/snap/` (Dockerfile, cloudbuild.yaml) —
-   **its own directories and images**, not `ops/simmer/{poster,snap}` re-used.
-3. `ops/matrix/deploy.sh` — **forked from `ops/simmer/deploy.sh`**, not a
-   generalization of it. `ops/simmer/deploy.sh` hardcodes `ops/simmer/poster`
-   / `ops/simmer/snap` as source paths and several `SIMMER_`-prefixed env var
-   *names* (not just values, e.g. `SIMMER_API_BASE=https://edge.facades.trade`
-   is baked into `deploy_poster()`) — those assumptions are specific enough to
-   Simmer's shape that a fork is cleaner than threading a product-neutral
-   config map through the existing script. `ops/matrix/deploy.sh` targets the
-   Matrix directories/images/topic/env-var names directly. Corresponding
-   `Makefile` targets: `matrix-deploy`, `matrix-poster`, `matrix-preflight`,
-   etc., mirroring the `simmer-*` ones but pointed at `ops/matrix/`.
-4. `src/lib/sources/matrix_source.py` (`MatrixAPI`, mirrors `simmer_source.py`),
-   `compose_matrix()` in `src/lib/recipes.py`, the `matrix_api` branch in
-   `src/lib/sources/factory.py`.
-5. Multi-view support in `ops/matrix/snap/main.py` (its own fork of
-   `ops/simmer/snap/main.py`) — select `SNAP_SELECTOR` by the `view` param
-   (§Screenshots).
-6. `_TIER_FILE_BY_ID["matrix"]` uncommented in `src/lib/config_loader.py`
-   (the line is already there, commented out).
+1. **EdgeLane**: `app/matrix_events.py` (publisher) + `app/matrix_signals.py`
+   (transition detection for the 7 states) + a hook at the end of
+   `evaluator.py::evaluate_pending` (no separate watcher, as this doc
+   specified) + `app/routes/matrix.py` (`GET /matrix/state/{SYM}?block=`) +
+   `app/matrix_snap.py` (`GET /matrix/snap/{SYM}?view=`). Full map:
+   `EdgeLane/docs/matrix_events_update.md`'s "Status — shipped" table.
+2. **This repo**: `bin/matrix_poster.py`, `src/lib/sources/matrix_source.py`
+   (`MatrixAPI`), `compose_matrix()` in `recipes.py`, the `matrix_api` branch
+   in `factory.py`/`imagery.py`, `ops/matrix/{poster,snap}/` + `deploy.sh` +
+   `preflight.sh` (forked from Simmer's, per the reasoning above — not a
+   generalization), `Makefile` `matrix-*` targets,
+   `_TIER_FILE_BY_ID["matrix"]` registered.
+3. **Postiz**: X `@facades_matrix` + LinkedIn "Matrix" connected under the
+   shared "Facades" customer; `matrix-api-token` secret created and rotated
+   to the real value EdgeLane issued; `make matrix-preflight` green.
 
-**Postiz / ops:**
-1. Connect X `@facades_matrix` and the LinkedIn "Matrix" page as channels
-   (handles confirmed); fill in the real `POSTIZ_INTEGRATION_ID_*_MATRIX` ids
-   (placeholders only in `facades_handles.example.yaml` today).
-2. `matrix-api-token` secret in Secret Manager.
-3. `make matrix-preflight` (once `ops/matrix/preflight.sh` exists) before the
-   first live event.
+Two lessons worth carrying into the next Facades product (Torque):
+- **`_to_card()`'s first mapping guess was wrong** — the real API nests
+  the strategy data one level deeper (`data.pick`, `data.grid.grid`) than
+  guessed, and has no `tags` array (reconstructed from
+  `health`/`liquidity`/`composite_verdict.label` instead). Don't trust a
+  provisional mapping until it's been run against the live endpoint at
+  least once.
+- **A config file's inline `# comment` can't safely contain an apostrophe**
+  with the parser's old `shlex.split()` call — hit this twice writing
+  `matrix_tier.config`. Fixed at the root in
+  `config_loader.py::_first_token()` (a `#`-aware `shlex.shlex` instead),
+  so this is no longer a trap for Torque's config either.
 
 None of this touches Simmer — its topic, its containers, its images are
 untouched by any of the above.
 
-## Open questions (for whoever green-lights the build)
+## Open questions
 
-- Same Postiz "Facades" customer as Simmer, or its own? Defaulted to "same"
-  above (`POSTIZ_CUSTOMER_ID_MATRIX` reuses the value) — cheap to change
-  later if wrong, so not blocking.
+- Same Postiz "Facades" customer as Simmer, or its own? Went with "same"
+  (`POSTIZ_CUSTOMER_ID_MATRIX` reuses the value) — cheap to change later if
+  wrong, so not blocking.
+- Matrix currently covers **SPX and NDX only**. Nothing here assumes
+  otherwise (the poster/recipe code is symbol-agnostic), but don't test with
+  arbitrary tickers (AAPL/NVDA/etc. were used for early pipeline tests before
+  this was known — they compose fine on the minimal-card fallback, but
+  aren't real Matrix coverage and shouldn't be mistaken for it).

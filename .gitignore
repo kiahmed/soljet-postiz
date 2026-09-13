@@ -32,6 +32,7 @@ data/render_gcs_cache.json
 # bin/simmer_poster.py local-mode dedupe (per-machine)
 data/simmer_poster_dedupe.json
 data/matrix_poster_dedupe.json
+data/matrix_poster_state_gaps.json
 
 # Postiz DB/media export for machine migration — contains LIVE OAuth tokens
 # and the Postiz login hash. Move by hand (scp/USB); never commit.

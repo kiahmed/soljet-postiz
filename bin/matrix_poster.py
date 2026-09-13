@@ -92,6 +92,11 @@ class Dedupe:
             except Exception as e:  # noqa: BLE001
                 _log("dedupe_firestore_unavailable", error=str(e))
         self._path = REPO_ROOT / "data" / "matrix_poster_dedupe.json"
+        # Separate small store for the per-state min-gap safety net (§Gating
+        # in docs/matrix_integration.md) — a state's LAST POST TIME, not a
+        # seen/unseen set, so it needs its own file locally (Firestore reuses
+        # the same collection under a namespaced doc id instead).
+        self._gap_path = REPO_ROOT / "data" / "matrix_poster_state_gaps.json"
 
     @staticmethod
     def key(evt: dict) -> str:
@@ -127,6 +132,48 @@ class Dedupe:
         cur.add(k)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(sorted(cur)))
+
+    # ---- per-state min-gap safety net (docs/matrix_integration.md §Gating) --
+    # This is NOT the primary gate — the engine deciding a moment is worth a
+    # post is (POST_ON_STATES + EdgeLane's own significance rules). This is
+    # insurance so a bug in that upstream judgment can't turn into a wall of
+    # posts; it only fires for states that set MATRIX_MIN_GAP_HOURS_<STATE>.
+    def last_state_time(self, state: str) -> datetime | None:
+        doc_id = f"__gap__:{state}"
+        if self._fs is not None:
+            try:
+                doc = self._fs.collection(self.coll).document(doc_id).get()
+                at = doc.to_dict().get("at") if doc.exists else None
+            except Exception as e:  # noqa: BLE001
+                _log("gap_read_failed", error=str(e))
+                return None
+        else:
+            try:
+                at = json.loads(self._gap_path.read_text()).get(state)
+            except (OSError, json.JSONDecodeError):
+                at = None
+        if not at:
+            return None
+        try:
+            return datetime.fromisoformat(at)
+        except ValueError:
+            return None
+
+    def mark_state_time(self, state: str, when: datetime) -> None:
+        iso = when.isoformat()
+        if self._fs is not None:
+            try:
+                self._fs.collection(self.coll).document(f"__gap__:{state}").set({"at": iso})
+                return
+            except Exception as e:  # noqa: BLE001
+                _log("gap_write_failed", error=str(e))
+        try:
+            cur = json.loads(self._gap_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            cur = {}
+        cur[state] = iso
+        self._gap_path.parent.mkdir(parents=True, exist_ok=True)
+        self._gap_path.write_text(json.dumps(cur))
 
 
 # ------------------------------------------------------------------- event I/O
@@ -168,6 +215,24 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         result["status"] = "error"
         result["reason"] = "no symbol"
         return result
+
+    # Per-state min-gap safety net — insurance, not the primary gate (see
+    # Dedupe.last_state_time's docstring). Only states with
+    # MATRIX_MIN_GAP_HOURS_<STATE> set in the tier config are floored;
+    # reactive states (pick_selected, bias_*, win_rate_notable) have none.
+    gap_key = f"MATRIX_MIN_GAP_HOURS_{state.upper()}"
+    try:
+        gap_hours = float(tier.raw.get(gap_key) or 0)
+    except ValueError:
+        gap_hours = 0
+    if gap_hours > 0:
+        last = dedupe.last_state_time(state)
+        if last is not None:
+            elapsed_h = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+            if elapsed_h < gap_hours:
+                result["reason"] = (f"min-gap: {elapsed_h:.1f}h since last {state!r} post, "
+                                    f"floor is {gap_hours}h ({gap_key})")
+                return result
 
     k = dedupe.key(evt)
     if dedupe.seen(k):
@@ -249,6 +314,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
                                integration_ids=[i for i in iids],
                                response={"channels": posted_channels})
         dedupe.mark(k, {"symbol": symbol, "state": state, "card_id": card_id, "mode": mode})
+        if gap_hours > 0:
+            dedupe.mark_state_time(state, datetime.now(timezone.utc))
     result["status"] = "posted" if ok else "error"
     result["result_channels"] = posted_channels
     return result

@@ -9,10 +9,10 @@ Related docs (don't duplicate — cross-reference):
   hand-post images/text live, troubleshooting.
 - **[simmer_integration.md](simmer_integration.md)** — the first **event-driven** product (Facades ·
   Simmer): no scheduler, Pub/Sub → Cloud Run poster. §5.3 here is the pointer.
-- **[matrix_integration.md](matrix_integration.md)** — the next Facades product
-  (strategy-grid trading), not yet onboarded — event/screenshot design + open
-  build items; reuses Simmer's two service accounts, but gets its own
-  Pub/Sub topic and its own poster/snap containers.
+- **[matrix_integration.md](matrix_integration.md)** — the second **event-driven**
+  product (Facades · Matrix, strategy-grid trading — SPX/NDX only), live as
+  of 2026-09-13. Reuses Simmer's two service accounts; its own Pub/Sub topic
+  and its own poster/snap containers. §5.3 covers it too.
 - **[linkedin-mentions.md](linkedin-mentions.md)** — how @mentions become real
   LinkedIn tags (slug → org URN) and the collision guard.
 - **catalyst-knowledge-graph `docs/handle-resolution-spec.md`** — the upstream
@@ -390,6 +390,15 @@ enriches each event from the read-only API when it can and otherwise posts a
 minimal text-only version from the event attributes — it never drops a
 state-change. Full picture, GCP provisioning (`ops/simmer/deploy.sh`), and the
 local e2e: **`docs/simmer_integration.md`**.
+
+**Matrix (Facades)** follows the identical mold — its own topic
+(`facades.matrix-events`), its own `matrix-poster`/`matrix-snap` containers
+(`ops/matrix/deploy.sh`, forked from Simmer's, not a `--product` flag on it)
+— with three differences: 7 states instead of 2 (all live —
+`docs/matrix_integration.md` §Post moments), 5 named snap views instead of 1
+fixed crop, and a per-state min-gap floor (`MATRIX_MIN_GAP_HOURS_<STATE>` in
+`matrix_tier.config`) as a safety net on top of the engine's own significance
+gating. Matrix currently covers **SPX and NDX only**, not arbitrary tickers.
 
 #### Day-2 ops — Simmer (same pattern for Matrix/Torque, swap the name)
 

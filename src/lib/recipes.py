@@ -287,14 +287,32 @@ def _matrix_tag_clause(tags: list[str]) -> str | None:
     return None
 
 
+def _matrix_grid_tags(entry: dict) -> list[str]:
+    """Same HEALTHY/LIQ HIGH/TRADEABLE-ON-LIMIT reconstruction _to_card() does
+    for the primary pick, applied to one entry of the `grid` block (each of
+    the 8 candidate structures carries the same health/liquidity/verdict
+    shape)."""
+    tags = []
+    if entry.get("health"):
+        tags.append(str(entry["health"]).upper())
+    if entry.get("liquidity"):
+        tags.append(f"LIQ {str(entry['liquidity']).upper()}")
+    verdict = entry.get("composite_verdict") or {}
+    if verdict.get("label"):
+        tags.append(str(verdict["label"]).upper())
+    return tags
+
+
 def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     """Deterministic post text from Matrix engine state. No LLM — same rule as
     compose_simmer(): the numbers and tags ARE the message.
 
-    Six states (docs/matrix_integration.md §Post moments): `pick_selected`,
-    `daily_recap` (both have a real crop today — the engine-pick chip);
-    `bias_aligned`/`bias_diverged`, `win_rate_notable`, `session_open`,
-    `grid_digest` degrade to a simpler line until their own crop/data exists."""
+    Seven states across 6 moments (docs/matrix_integration.md §Post moments —
+    bias_aligned/bias_diverged are the two outcomes of one moment):
+    `pick_selected`, `bias_aligned`, `bias_diverged`, `win_rate_notable`,
+    `session_open`, `grid_digest`, `daily_recap`. All draw on whatever blocks
+    MatrixAPI.get() fetched (pick/bias/grid/win_eval/walls) — never on data
+    the card doesn't carry."""
     sym = (card.get("symbol") or "").upper()
     st = card.get("state") or "pick_selected"
     strategy = card.get("strategy") or "a setup"
@@ -308,16 +326,45 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
                 + (f" (composite {composite})" if composite else "") + "."]
         if clause:
             bits.append(clause.capitalize() + ".")
+        grid = card.get("grid") or {}
+        if grid:
+            worst_key = min(grid, key=lambda k: grid[k].get("composite_score", 999) or 999)
+            worst = grid[worst_key] or {}
+            w_label = worst.get("label") or worst_key.replace("_", " ").title()
+            w_score = _fmt_num(worst.get("composite_score"), nd=1)
+            w_clause = _matrix_tag_clause(_matrix_grid_tags(worst))
+            line = f"Weakest: {w_label}" + (f" (composite {w_score})" if w_score else "") + "."
+            if w_clause:
+                line += f" {w_clause.capitalize()}."
+            bits.append(line)
     elif st == "bias_aligned":
         bits = [f"${sym} — the bias read now agrees with the engine's pick ({strategy})."]
     elif st == "bias_diverged":
         bits = [f"${sym} — the bias read is diverging from the engine's pick ({strategy})."]
     elif st == "win_rate_notable":
-        bits = [f"${sym}'s win-eval grid just turned a corner on {strategy}."]
+        wr = card.get("win_rate")
+        graded = card.get("graded")
+        if wr is not None and graded:
+            bits = [f"${sym}'s win-eval grid: {wr:.0f}% win rate over {graded} graded trades on {strategy}."]
+        else:
+            bits = [f"${sym}'s win-eval grid just turned a corner on {strategy}."]
     elif st == "session_open":
-        bits = [f"${sym} — today's walls, ahead of the open."]
+        walls = (card.get("walls") or {}).get("key_levels") or {}
+        cw, pw = walls.get("call_wall"), walls.get("put_wall")
+        if cw is not None or pw is not None:
+            bits = [f"${sym} — today's walls: call {_fmt_num(cw, nd=0) or cw}, "
+                    f"put {_fmt_num(pw, nd=0) or pw}."]
+        else:
+            bits = [f"${sym} — today's session open."]
     elif st == "grid_digest":
-        bits = [f"This week's strategy grid for ${sym} — a look at all 8 setups."]
+        grid = card.get("grid") or {}
+        n = len(grid)
+        tradeable = sum(1 for v in grid.values()
+                        if (v.get("composite_verdict") or {}).get("mode") not in (None, "skip", "wait"))
+        if n:
+            bits = [f"This week's strategy grid for ${sym} — {n} setups scored, {tradeable} tradeable."]
+        else:
+            bits = [f"This week's strategy grid for ${sym} — a look at all the setups."]
     else:  # pick_selected (default)
         bits = [f"${sym} — engine pick: {strategy}"
                 + (f". Composite {composite}" if composite else "") + "."]
