@@ -66,12 +66,24 @@ def snap() -> Response:
             page = browser.new_page(viewport={"width": vw, "height": vh}, device_scale_factor=2)
             if API_TOKEN:
                 page.set_extra_http_headers({"Authorization": f"Bearer {API_TOKEN}"})
-            page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
+            resp = page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
+            # A 404/500 from the render endpoint (e.g. a bad symbol) is still
+            # a "successful" navigation as far as Playwright is concerned —
+            # goto() doesn't raise on it. Left unchecked, the selector-wait
+            # below times out and falls through to the full-viewport
+            # fallback, which happily screenshots the upstream's error page
+            # and posts THAT as the image. Fail loudly instead: no image
+            # beats a screenshot of an error page.
+            if resp is not None and not resp.ok:
+                browser.close()
+                return jsonify({"error": f"upstream {resp.status}", "url": url}), 502
             try:
                 el = page.wait_for_selector(SELECTOR, timeout=TIMEOUT_MS, state="visible")
                 png = el.screenshot(type="png")
             except Exception:
-                # fall back to a full-viewport shot so a selector drift still
+                # The page loaded fine (status check above passed) but the
+                # crop wrapper wasn't found — fall back to a full-viewport
+                # shot of that same good page so a selector drift still
                 # yields *an* image rather than failing the post
                 png = page.screenshot(type="png", full_page=False)
             browser.close()
