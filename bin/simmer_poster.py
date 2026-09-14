@@ -43,6 +43,7 @@ from bin._common import integration_ids_for, load_dotenv  # noqa: E402
 from src.lib.channel_dispatch import channel_label, channel_parts  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.imagery import auto_media  # noqa: E402
+from src.lib.market_hours import is_market_open, market_hours_enforced  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
 from src.lib.recipes import recipe_simmer  # noqa: E402
 from src.lib.sources.simmer_source import make_card_id  # noqa: E402
@@ -159,6 +160,19 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         result["reason"] = "no symbol"
         return result
 
+    # Market-hours gate — WITH an exception, unlike Matrix's: a real
+    # bullish/bearish catalyst can make a credit-spread call worth sharing
+    # off-hours even though the chain it's read against is the last live one,
+    # not a current tick. EdgeLane marks that judgment call on the event
+    # itself (attribute `off_hours_catalyst`) — the poster only ever HONORS
+    # that flag, it never decides "this looks like a catalyst" itself; it has
+    # no news feed to judge that from. No flag => gated exactly like Matrix.
+    market_open = is_market_open()
+    off_hours_catalyst = str(evt.get("off_hours_catalyst") or "").strip().lower() in ("1", "true", "yes")
+    if market_hours_enforced(tier) and not market_open and not off_hours_catalyst:
+        result["reason"] = "market closed (no off_hours_catalyst flag on the event)"
+        return result
+
     k = dedupe.key(evt)
     if dedupe.seen(k):
         result["status"] = "duplicate"
@@ -167,8 +181,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
 
     card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat(), evt.get("expiry") or "")
     try:
-        bundle = recipe_simmer(tier, card_id, state=state,
-                               symbol=symbol, expiry=evt.get("expiry") or "")
+        bundle = recipe_simmer(tier, card_id, state=state, symbol=symbol,
+                               expiry=evt.get("expiry") or "",
+                               off_hours_catalyst=(not market_open and off_hours_catalyst))
     except Exception as e:  # noqa: BLE001
         result["status"] = "error"
         result["reason"] = f"compose: {e}"

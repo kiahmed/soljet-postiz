@@ -29,6 +29,21 @@ quick reference.
 Text is **deterministic** (`src/lib/recipes.py::compose_simmer`) — the post must
 equal the engine snapshot at publish time; no LLM rewrite.
 
+## Market hours
+
+`bin/simmer_poster.py` gates every event on the regular US session (9:30–16:00
+America/New_York, Mon–Fri — `src/lib/market_hours.py`, no holiday calendar
+yet). A `ready`/`watch_entered` event outside that window is skipped by
+default: the read it's built from is a stale chain, not a live one.
+
+**The one exception**: an event carrying the attribute `off_hours_catalyst=true`
+still posts, with a disclaimer `compose_simmer()` appends automatically
+("Alert generated while markets were closed…"). That flag is **EdgeLane's
+call, never the poster's** — it has no news feed to judge a catalyst from.
+See `EdgeLane/docs/simmer_off_hours_catalyst.md` for the (not-yet-built)
+engine-side contract. `MARKET_HOURS_ENFORCED="false"` in the tier config
+disables the gate entirely (testing only).
+
 ## Operate
 
 ```bash

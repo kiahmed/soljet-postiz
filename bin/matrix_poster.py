@@ -53,6 +53,7 @@ from bin._common import integration_ids_for, load_dotenv  # noqa: E402
 from src.lib.channel_dispatch import channel_label, channel_parts  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.imagery import auto_media  # noqa: E402
+from src.lib.market_hours import is_market_open, market_hours_enforced  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
 from src.lib.recipes import recipe_matrix  # noqa: E402
 from src.lib.sources.matrix_source import make_card_id  # noqa: E402
@@ -214,6 +215,14 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
     if not symbol:
         result["status"] = "error"
         result["reason"] = "no symbol"
+        return result
+
+    # Market-hours gate — no exception for Matrix (unlike Simmer's off-hours
+    # catalyst allowance): the strategy grid is only meaningful against a live
+    # chain, and there's no "last available chain + catalyst" fallback story
+    # for a multi-leg spread the way there is for Simmer's single-ticker read.
+    if market_hours_enforced(tier) and not is_market_open():
+        result["reason"] = "market closed"
         return result
 
     # Per-state min-gap safety net — insurance, not the primary gate (see

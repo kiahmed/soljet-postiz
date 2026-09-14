@@ -130,6 +130,16 @@ publishes to Matrix's **own** topic (`facades.matrix-events`,
 `attributes.product="matrix"`), on the filtered sub `matrix-poster-sub`, not
 a share of Simmer's.
 
+## Market hours
+
+`bin/matrix_poster.py` gates every event on the regular US session
+(9:30–16:00 America/New_York, Mon–Fri — `src/lib/market_hours.py`). Unlike
+Simmer, **there is no off-hours exception** — a multi-leg spread read against
+a stale chain has no "last available snapshot + catalyst" fallback story the
+way a single-ticker credit-spread call does, so an off-hours event is always
+skipped, full stop. `MARKET_HOURS_ENFORCED="false"` in `matrix_tier.config`
+disables the gate entirely (testing only).
+
 ## Gating & anti-spam philosophy
 
 This is the part of the brainstorm worth being explicit about, because it's a

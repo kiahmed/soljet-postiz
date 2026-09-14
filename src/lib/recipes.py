@@ -196,6 +196,11 @@ def compose_simmer(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
             bits.append(", ".join(seg) + (f" into {expiry}." if expiry else "."))
         bits.append("Watching the gates — we'll say when it's ready.")
 
+    if card.get("_off_hours_catalyst"):
+        bits.append("Alert generated while markets were closed, based on a "
+                    "catalyst and the last available options chain — check "
+                    "back at the next market open.")
+
     text = " ".join(b for b in bits if b)
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
@@ -244,13 +249,20 @@ def _minimal_simmer_card(source_id: str, symbol: str, state: str | None,
 
 
 def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None,
-                  symbol: str | None = None, expiry: str | None = None) -> PostBundle:
+                  symbol: str | None = None, expiry: str | None = None,
+                  off_hours_catalyst: bool = False) -> PostBundle:
     """Simmer post for one ticker state-change. `state` (from the Pub/Sub event:
     watch_entered | ready | …) overrides whatever the API's current decision
     implies, so an event fired on the transition posts the right moment even if
     the engine has moved on by the time we re-pull. If the read-only API has no
     card for the ticker (KeyError), fall back to a minimal card from the event
-    attributes rather than dropping the post — `symbol` must then be given."""
+    attributes rather than dropping the post — `symbol` must then be given.
+
+    `off_hours_catalyst`: set by bin/simmer_poster.py only when the market is
+    actually closed AND the event itself carried the `off_hours_catalyst`
+    attribute (EdgeLane's call, not this function's) — makes
+    compose_simmer() append the disclaimer line (see docs/simmer_integration.md
+    §Market hours)."""
     src = build_source(tier.sources[0], tier)
     try:
         card = src.get(source_id)
@@ -260,6 +272,8 @@ def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None,
         card = _minimal_simmer_card(source_id, symbol, state, expiry)
     if state:
         card["state"] = state
+    if off_hours_catalyst:
+        card["_off_hours_catalyst"] = True
     return _simmer_bundle(tier, card)
 
 
