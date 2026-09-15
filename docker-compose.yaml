@@ -3,8 +3,31 @@ services:
     image: ${POSTIZ_IMAGE}
     container_name: postiz
     restart: unless-stopped
+    labels:
+      # Watched by the `autoheal` sidecar below — NOT the same as Docker's own
+      # `restart: unless-stopped`, which only fires on the container's PID 1
+      # exiting. The known failure mode here is PID 1 (pm2-runtime) staying up
+      # fine while its "backend" app loses the boot-time race for :3000
+      # (stale listener from the previous process still holding it -> pm2
+      # respawns -> EADDRINUSE -> silent crash -> nothing bound) — frontend
+      # answers, /api/* 502s forever, and the container itself never exits so
+      # `restart: unless-stopped` never triggers. Recurs on every reboot/
+      # `docker compose up` that recreates this container. Confirmed 2026-09-06
+      # and 2026-09-15 (`pm2 restart backend` inside the container was the fix
+      # both times) — this automates that fix instead of a manual re-check.
+      autoheal: "true"
     ports:
       - "${POSTIZ_PORT}:5000"
+    healthcheck:
+      # Through nginx :5000 -> backend :3000, the exact request path that
+      # 502s when the backend lost the port race above. node -e, not curl/
+      # wget/nc — none of those are in this image, only node.
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:5000/api/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 60s   # normal boot is ~10-15s; reboot contention (Postgres/Temporal also starting) needs more room before the first real check counts
     environment:
       MAIN_URL: ${MAIN_URL}
       FRONTEND_URL: ${FRONTEND_URL}
@@ -53,6 +76,24 @@ services:
         condition: service_started
     networks:
       - postiz-network
+
+  autoheal:
+    # Watches containers labeled autoheal=true (just `postiz` for now) and
+    # `docker restart`s them when Docker marks them unhealthy — the missing
+    # link between a HEALTHCHECK and an actual recovery action; Docker itself
+    # never restarts on a failed healthcheck, only on the container's PID 1
+    # exiting (see the label comment on the postiz service for why that
+    # never fires here). Needs the docker socket to issue the restart — the
+    # standard trade-off for this pattern, scoped to this one host.
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 20
+      AUTOHEAL_START_PERIOD: 60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   postiz-postgres:
     image: postgres:17-alpine
