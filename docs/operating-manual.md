@@ -7,6 +7,12 @@ cloud. Keep it current: when a step changes, edit it here in the same PR.
 Related docs (don't duplicate — cross-reference):
 - **[daily-posting.md](daily-posting.md)** — the day-to-day human routine, where
   hand-post images/text live, troubleshooting.
+- **[simmer_integration.md](simmer_integration.md)** — the first **event-driven** product (Facades ·
+  Simmer): no scheduler, Pub/Sub → Cloud Run poster. §5.3 here is the pointer.
+- **[matrix_integration.md](matrix_integration.md)** — the second **event-driven**
+  product (Facades · Matrix, strategy-grid trading — SPX/NDX only), live as
+  of 2026-09-13. Reuses Simmer's two service accounts; its own Pub/Sub topic
+  and its own poster/snap containers. §5.3 covers it too.
 - **[linkedin-mentions.md](linkedin-mentions.md)** — how @mentions become real
   LinkedIn tags (slug → org URN) and the collision guard.
 - **catalyst-knowledge-graph `docs/handle-resolution-spec.md`** — the upstream
@@ -57,8 +63,14 @@ Copy `products/arboryx.ai/tier.config` as a starting point and edit (field
 reference in §3). At minimum set: `TIER_ID`, `TIER_NAME`, a `DATA_SOURCE_1_*`,
 the channel IDs, `POSTIZ_CUSTOMER_ID`, and `POSTING_PURPOSE`.
 
+> **File-per-product layout** (Facades products — Simmer/Matrix/Torque): instead
+> of a directory per tier, several products share `products/facades/` with one
+> `<name>_tier.config` + `<name>_context.md` each. The loader supports both; pick
+> whichever fits. See `products/facades/simmer_tier.config`.
+
 ### 2.3 Register the tier id (the ONE code touch)
-`src/lib/config_loader.py` → add to `_TIER_DIR_BY_ID`:
+`src/lib/config_loader.py` → add to **`_TIER_DIR_BY_ID`** (dir-per-tier) **or**
+**`_TIER_FILE_BY_ID`** (file-per-product):
 ```python
 _TIER_DIR_BY_ID = {
     "arboryx": PRODUCTS_ROOT / "arboryx.ai",
@@ -66,7 +78,12 @@ _TIER_DIR_BY_ID = {
     "acme": PRODUCTS_ROOT / "acme.ai",                                  # ← new
     "acme.<branch>": PRODUCTS_ROOT / "acme.ai" / "branches" / "<branch>",  # if any
 }
+_TIER_FILE_BY_ID = {                                    # file-per-product
+    "simmer": (_FACADES_DIR / "simmer_tier.config", _FACADES_DIR),
+}
 ```
+`known_tiers()` returns every id from both maps — it's what `make check` and the
+status tools enumerate.
 
 ### 2.4 Add the secrets/IDs to `.env`
 Configs expect these `${VAR}` names (mirror the arboryx pattern):
@@ -74,8 +91,8 @@ Configs expect these `${VAR}` names (mirror the arboryx pattern):
 POSTIZ_INTEGRATION_ID_X_ACME=<x integration id>
 POSTIZ_INTEGRATION_ID_LINKEDIN_ACME=<linkedin integration id>
 POSTIZ_CUSTOMER_ID_ACME=<postiz customer id>
-# shared, already present: HANDLE_ENDPOINT_URL, GOOGLE_APPLICATION_CREDENTIALS,
-#   LINKEDIN_CLIENT_ID/SECRET
+# shared, already present: HANDLE_ENDPOINT_URL (private Cloud Run handle-
+#   resolver), GOOGLE_APPLICATION_CREDENTIALS, LINKEDIN_CLIENT_ID/SECRET
 ```
 Then reference them in `tier.config` as `${POSTIZ_INTEGRATION_ID_X_ACME}` etc.
 
@@ -102,19 +119,21 @@ branches) or use the default.
 **Identity**
 | Field | Meaning |
 |---|---|
-| `TIER_ID` | dotted id, must match `_TIER_DIR_BY_ID` |
+| `TIER_ID` | the id key in `_TIER_DIR_BY_ID` / `_TIER_FILE_BY_ID` (dotted for a branch) |
 | `TIER_NAME` | human label |
 | `TIER_PARENT` | parent id (`""` for a product, `<product>` for a branch) |
 | `CONTEXT_FILE` | voice/brand file the composer reads (`context.md`) |
 | `POSTING_PURPOSE` | free text steering tone/audience |
 
-**Data source(s)** — `DATA_SOURCE_<n>_*`, source `1` is the daily feed
+**Data source(s)** — `DATA_SOURCE_<n>_*`, source `1` is the primary feed
 | Type | Use |
 |---|---|
 | `firestore` | parent findings collection (e.g. `findings`) |
 | `firestore_cards` | KG per-card collection (`CKG-<Sector>/catalysts/items`) — the live cards the site serves |
+| `cards_json` | a local `cards.json` KG artifact (`_PATH`) |
 | `duckdb` | local KG DuckDB (`_PATH`) |
 | `firestore_inherited` | reuse the parent's Firestore, filtered (`_INHERIT_FROM`, `_FILTER_CATEGORY`) |
+| `simmer_api` | EdgeLane read-only API — event-driven products (Simmer); `_BASE_URL`, `_TOKEN_ENV`. See `docs/simmer_integration.md`. |
 
 Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 
@@ -139,7 +158,7 @@ Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 | Field | Meaning |
 |---|---|
 | `HANDLE_INJECTION` | `true` = @-mention subject entities |
-| `HANDLE_ENDPOINT_URL` | `${…}` resolver endpoint (or embed handles on cards) |
+| `HANDLE_ENDPOINT_URL` | `${…}` private Cloud Run handle-resolver, OIDC-authed via `GOOGLE_APPLICATION_CREDENTIALS`; read from `.env`. Empty = card-embedded handles + `products/_shared/handles.json` only |
 | `ENTITY_TAG_MODE` | `prefer_handle` \| `handle_only` \| `cashtag_only` \| `both` |
 | `MAX_ENTITY_TAGS` | cap (default 2) |
 | `CASHTAGS_ENABLED` | `$TICKER` cashtags (needs a US-listed marker; off by default) |
@@ -155,20 +174,21 @@ All posting runs through `bin/daily.py` (queue) or `bin/post.py` (one card),
 wrapped by make targets. **Preview is the default; nothing publishes without
 `--push` / `make post`.**
 
-**Knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
-`CHANNEL=linkedin|x` one channel · `TIER=acme.<branch>` one tier.
+**`TIER=<id>` is REQUIRED** for `post` / `post-preview` / `regenerate` — a run
+always targets one named tier; there is no "all tiers" sweep (`make post` with no
+tier is refused). `make check` is the tier-less overview.
+
+**Other knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
+`CHANNEL=linkedin|x` one channel.
 
 ```bash
-# preview the next post for every enabled tier, all channels
-make post-preview
-
-# preview a specific tier / channel / oldest-first backlog walk
-make post-preview TIER=acme OLDEST=1
-make post-preview CHANNEL=linkedin
+# what would post next, one tier
+make post-preview TIER=acme
+make post-preview TIER=acme OLDEST=1 CHANNEL=linkedin
 
 # actually publish (same knobs)
-make post
-make post OLDEST=1 TIER=acme.robotics CHANNEL=linkedin
+make post TIER=acme.robotics
+make post TIER=acme.robotics OLDEST=1 CHANNEL=linkedin
 
 # re-compose from scratch (discard the staged content_cache) then preview
 make regenerate TIER=acme
@@ -201,15 +221,37 @@ See daily-posting.md §"Posting one by hand" for the `--copy`/`--show` helpers.
 ## 5. Run on autopilot (local cron or GCP prod)
 
 The daily poster runs on one of two backends, chosen by `GCP_PROD_SCHEDULER` in
-`.env` (`disabled` = local supercronic container, `enabled` = GCP Cloud
-Scheduler → trigger sidecar). The same targets drive either backend:
+`.env`. One set of `make scheduler-*` targets drives both —
+`ops/scheduler/scheduler-ctl.sh` reads the flag and dispatches. Only one backend
+runs at a time.
+
+| | **local** — `GCP_PROD_SCHEDULER=disabled` (default) | **prod / GCP** — `GCP_PROD_SCHEDULER=enabled` |
+|---|---|---|
+| Schedule lives in | generated crontab `ops/scheduler/crontab`, run by supercronic **inside the container** | **GCP Cloud Scheduler** jobs (`postiz-daily-<channel>`) — the timer is in Google's cloud |
+| Container | `postiz-scheduler` (supercronic daemon) | `postiz-scheduler-trigger` (HTTP listener, `ops/scheduler/trigger.py`) |
+| Compose profile | `scheduler` | `scheduler-gcp` |
+| A run is triggered by | supercronic firing `run-daily.sh` off the in-container crontab | Cloud Scheduler POSTing the trigger through the **Cloudflare tunnel** → `run-daily.sh` |
+| Also needs | nothing external | `gcloud` auth on the make host; a Cloudflare tunnel ingress route to `http://postiz-scheduler-trigger:8090`; `SCHEDULER_TRIGGER_*` in `.env` |
+| Posting logic runs | on this machine | on this machine (Cloud Scheduler is **only** the timer) |
+
+Either way the posting logic — `make post`, docker-exec confirmation, the sqlite
+posted-log, KG card PNGs — stays on the machine running the stack. Switching
+backends: flip the flag, `make scheduler-down` in the old mode, `make scheduler-up`
+in the new one.
 
 ```bash
-make scheduler-up          # start (local container, or GCP jobs + trigger)
-make scheduler-run         # fire ONE run now (test) — same as a real daily fire
-make scheduler-logs        # follow it
-make scheduler-restart     # re-apply the schedule after editing channels.conf
-make scheduler-down        # stop + remove (local container, or GCP jobs)
+make scheduler-up          # local: gen crontab + `compose --profile scheduler up -d --build scheduler`
+                           # GCP:   `compose --profile scheduler-gcp up -d --build scheduler-trigger`
+                           #        + ensure Cloudflare route + upsert Cloud Scheduler jobs
+make scheduler-run         # fire ONE run now — local: exec run-daily.sh · GCP: gcp-scheduler.sh run
+make scheduler-logs        # follow  — local: container logs · GCP: gcp-scheduler.sh logs
+make scheduler-restart     # re-apply after editing channels.conf (§5.1)
+                           # local: regen crontab + `compose restart scheduler` (container keeps its env —
+                           #        a compose/.env change needs `scheduler-down` + `-up`)
+                           # GCP:   RECREATES the trigger container (`up -d --build`) + re-ensure route
+                           #        + re-upsert jobs — picks up compose/.env changes
+make scheduler-down        # local: remove the container
+                           # GCP:   ⚠ DELETE the Cloud Scheduler jobs + Cloudflare route, remove the trigger
 ```
 
 ### 5.1 Frequency & volume — `ops/scheduler/channels.conf`
@@ -224,6 +266,9 @@ x        | 5 | 70m | arboryx.robotics | 30 8 * * *
 
 - `count` — cards posted per daily fire (X bills ~$0.20/post: cost dial).
 - `delay` — spacing between cards within a run (`90` secs, or `60m`/`2h`).
+- `tier`  — **required**; the one tier this row posts. A fire always targets
+  exactly one tier — `make post` has no "all tiers" mode and refuses without a
+  `TIER=`.
 - `cron`  — when the run fires (5-field; TZ = `SCHEDULER_TZ` locally,
   `GCP_SCHEDULER_TZ` on GCP).
 
@@ -262,21 +307,146 @@ Dry-run without spending: `DRY=1 ./gcp-scheduler.sh create` prints the exact
 gcloud calls; `SCHEDULER_DRY_RUN=1` makes a fired run echo its resolved
 `make post` line instead of posting. Full design: `docs/scheduler.md`.
 
-**What the scheduler needs** (already wired in `docker-compose.yaml`, confirm
-per environment):
-- `GOOGLE_APPLICATION_CREDENTIALS` — a service-account key with Datastore read,
-  identity-mounted into the container (user ADC can't run headless).
-- `HANDLE_ENDPOINT_URL: http://host.docker.internal:8084` — the handle resolver,
-  reachable from inside the container (host uses `localhost:8084`).
+**What a run needs** (host runs and both scheduler containers alike — already
+wired in `docker-compose.yaml`, confirm per environment):
+- `GOOGLE_APPLICATION_CREDENTIALS` — a service-account key with Datastore read
+  **and `roles/run.invoker`** on the handle-resolver Cloud Run service.
+  Identity-mounted into the scheduler containers at its host path (user ADC
+  can't run headless).
+- `HANDLE_ENDPOINT_URL` — the private Cloud Run handle-resolver
+  (`https://handle-resolver-…-uc.a.run.app`). `src/lib/handles.py` mints a
+  Google OIDC token from `GOOGLE_APPLICATION_CREDENTIALS` for it; on any
+  failure it falls back to card-embedded handles and never blocks a post.
+  **Not** set in `docker-compose.yaml` — `load_dotenv()` reads it from the
+  mounted `/app/.env`, so host and containers share the one value. (Point it
+  at a local `http://…:8084` resolver instead and no token is sent — `http://`
+  is treated as trusted/local.)
+- Container egress to `*.run.app` and Google's token endpoints.
 - The KG repo mounted read-only if a tier reads `duckdb`/`cards` from it.
 
-**A cloud fire does exactly what `make post` does locally** — one post per
-enabled tier, per channel, published + confirmed; X failures → manual queue;
-LinkedIn attaches the card image and resolves real @mentions.
+**A cloud fire does exactly what `make post TIER=<row>` does locally** — for the
+one tier named in that `channels.conf` row, a post on the row's channel,
+published + confirmed; X failures → manual queue; LinkedIn attaches the card
+image and resolves real @mentions.
 
 > **Notifications:** there's no external notifier by design. Postiz's own UI
 > surfaces failures, and the manual queue captures anything X couldn't publish.
 > You don't need a laptop running.
+
+### 5.3 Event-driven products (no scheduler)
+
+Some products don't drain a daily backlog — they post on an upstream event, so
+they have **no `channels.conf` row and no scheduler target**. **Simmer**
+(Facades) is the first: its engine publishes ticker state-change events to a
+GCP Pub/Sub topic and a dedicated Cloud Run service (`simmer-poster`,
+`bin/simmer_poster.py --serve`, a **push** subscriber) consumes them and posts
+via the Postiz API — it terminates on Cloud Run, nothing runs on this box.
+`POSTING_CADENCE_DAILY="false"` in the tier.config marks such a product;
+`make post`/`--check`/`social-status` still see it (`make post TIER=simmer`
+works for a manual one-off).
+
+**The end-to-end flow (Simmer, and the mold every Facades product follows):**
+
+```
+EdgeLane engine                 GCP                                    Postiz
+────────────────                ─────────────────────────              ──────
+ticker crosses a gate    ──►  Pub/Sub topic                       
+(watch_entered | ready)        facades.ticker-events
+                                attrs: product, symbol, state,          
+                                expiry, event_id                        
+                                       │
+                                       │ push, filtered
+                                       │ attributes.product="simmer"
+                                       ▼
+                                simmer-poster (Cloud Run)
+                                bin/simmer_poster.py --serve
+                                 1. dedupe on event_id (Firestore)
+                                 2. GET /simmer/state/<SYM> (EdgeLane
+                                    read-only API) → full card, or a
+                                    minimal text-only card if it 404s
+                                 3. compose_simmer() → deterministic text
+                                       │
+                                       │ POST {symbol,expiry,state}
+                                       ▼
+                                simmer-snap (Cloud Run, headless Chromium)
+                                screenshots the live board's
+                                [data-snap="card"] crop → PNG
+                                       │
+                                       │ text + image
+                                       ▼
+                                simmer-poster ──► Postiz public API   ──►  X
+                                (the "tunnel": POST /api/public/v1/         @facades_simmer
+                                 upload then /posts, bearer = postiz-        + Simmer LinkedIn
+                                 api-key secret)                             page, PUBLISHED
+```
+
+Nothing here runs on this box — the whole chain lives on Cloud Run. A
+transition fires, and within seconds both channels have the post with the
+board snapshot and a deep link back to `simmer.facades.trade/?symbol=<SYM>`.
+
+Locally you validate with a **pull** subscription instead: `make simmer-sub-local`
+then `make simmer-poster MODE=draft SUB=simmer-poster-sub-local`. The poster
+enriches each event from the read-only API when it can and otherwise posts a
+minimal text-only version from the event attributes — it never drops a
+state-change. Full picture, GCP provisioning (`ops/simmer/deploy.sh`), and the
+local e2e: **`docs/simmer_integration.md`**.
+
+**Matrix (Facades)** follows the identical mold — its own topic
+(`facades.matrix-events`), its own `matrix-poster`/`matrix-snap` containers
+(`ops/matrix/deploy.sh`, forked from Simmer's, not a `--product` flag on it)
+— with three differences: 7 states instead of 2 (all live —
+`docs/matrix_integration.md` §Post moments), 5 named snap views instead of 1
+fixed crop, and a per-state min-gap floor (`MATRIX_MIN_GAP_HOURS_<STATE>` in
+`matrix_tier.config`) as a safety net on top of the engine's own significance
+gating. Matrix currently covers **SPX and NDX only**, not arbitrary tickers.
+
+#### Day-2 ops — Simmer (same pattern for Matrix/Torque, swap the name)
+
+```bash
+# health check — GCP + .env wiring, green OK / red FAIL per dependency
+make simmer-preflight
+
+# what's deployed: the two Cloud Run services + the two subscriptions
+gcloud run services list --project marketresearch-agents --region us-central1 \
+  --filter="metadata.name~simmer" --format="table(metadata.name,status.url,status.latestReadyRevisionName)"
+gcloud pubsub subscriptions list --project marketresearch-agents \
+  --filter="name~simmer" --format="table(name,pushConfig.pushEndpoint)"
+# (no Cloud Functions, no Scheduler jobs for an event-driven product — it's
+# push-only, so both those lists come back empty for `simmer`)
+
+# tail the poster's app logs (structured JSON: serve_start, processed, posted,
+# enrich_minimal) — needs PYTHONUNBUFFERED=1 + gunicorn --capture-output,
+# both already set in ops/simmer/poster/Dockerfile
+gcloud logging read 'resource.type=cloud_run_revision AND
+  resource.labels.service_name=simmer-poster' --project marketresearch-agents \
+  --limit 50 --format=json
+
+# check a specific post's outcome straight from the Postiz DB (state should be
+# PUBLISHED with an empty error column; ERROR + the error text tells you why
+# a channel rejected it — e.g. X's one-cashtag-per-post rule)
+docker exec postiz-postgres psql -U postiz-user -d postiz-db-local -c \
+  "select id, \"integrationId\", state, error, left(content,120) from \"Post\" where id='<post_id>';"
+
+# redeploy just the poster after a tier.config / code change (fast — no need
+# to touch simmer-snap or the subscription)
+make simmer-deploy PART=--poster-only
+
+# fire one real event end-to-end from EdgeLane and watch it land
+docker exec edgelane-backend python /srv/tools/simmer_fire_event.py --state ready --symbol <SYM>
+
+# local pull-test subscription: create it, drain it, or tear it down
+make simmer-deploy PART=--sub-local          # create simmer-poster-sub-local
+make simmer-poster MODE=draft SUB=simmer-poster-sub-local
+gcloud pubsub subscriptions delete simmer-poster-sub-local --project marketresearch-agents
+```
+
+**Why `facades-poster-sa` needs no project-wide Pub/Sub role:** the live
+subscription is a **push** subscription (`pushConfig.oidcToken.serviceAccountEmail
+= facades-poster-sa`) — Pub/Sub's own service agent mints the OIDC token and
+calls the Cloud Run URL directly, gated only by `run.invoker` on the target
+service. `pubsub.subscriber` only matters for a **pull** subscriber, which is
+what the local `*-poster-sub-local` path uses, run with your own gcloud
+credentials, not the runtime SA.
 
 ---
 
@@ -296,13 +466,16 @@ died — `make heal`. This is the historical #1 failure mode.
 ## 7. New-product checklist (copy per product)
 
 - [ ] Postiz: channels connected, Customer created, IDs noted
-- [ ] `products/<name>.ai/tier.config` (+ `context.md`, optional `branches/`)
-- [ ] `_TIER_DIR_BY_ID` entry in `src/lib/config_loader.py`
+- [ ] `products/<name>.ai/tier.config` **or** `products/facades/<name>_tier.config` (+ context, optional `branches/`)
+- [ ] `_TIER_DIR_BY_ID` **or** `_TIER_FILE_BY_ID` entry in `src/lib/config_loader.py`
 - [ ] `.env`: integration IDs + customer ID
 - [ ] `make check` lists the tier with its channels
 - [ ] `make post-preview TIER=<name>` composes cleanly (text, image, tags)
 - [ ] one real `make post TIER=<name>` verified in Postiz
-- [ ] scheduler picks it up (enabled tier, live channels) — `make scheduler-run`
+- [ ] **daily-cadence product:** add a `channels.conf` row (with the `tier`
+      column) and `make scheduler-run` picks it up
+- [ ] **event-driven product** (§5.3): `POSTING_CADENCE_DAILY="false"`, deploy
+      its poster/subscription — no `channels.conf` row
 
 ---
 

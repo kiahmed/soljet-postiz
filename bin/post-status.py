@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
 from _common import build_source, load_dotenv  # noqa: E402
-from src.lib.config_loader import _TIER_DIR_BY_ID, load_tier  # noqa: E402
+from src.lib.config_loader import known_tiers, load_tier  # noqa: E402
 from src.lib import card_images  # noqa: E402
 from src.lib.composer import card_confidence  # noqa: E402
 from src.lib.posted_log import posted_ids_for, published_channels  # noqa: E402
@@ -178,7 +178,7 @@ def main() -> int:
     args = p.parse_args()
     load_dotenv()
 
-    tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
+    tiers = [args.tier] if args.tier else known_tiers()
     for tid in tiers:
         status_for(tid, show_missing=args.missing)
     return 0

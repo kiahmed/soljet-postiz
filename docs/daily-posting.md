@@ -222,6 +222,7 @@ Everything runs through `make` (run `make` alone for the full list):
 | `make scheduler-run` | Fire one daily run now (test) |
 
 `bin/daily.py` flags (what `make post*` wraps): `--push` publish · `--tier <id>`
-one tier · `--check` health only · `--since 30d` narrow the lookback (default is
-~all history; the posted-log prevents repeats, so a backlog drips one/day) ·
+**required** for any post/preview/regenerate — there is no "all tiers" mode;
+`--check` is the tier-less overview · `--since 30d` narrow the lookback (default
+is ~all history; the posted-log prevents repeats, so a backlog drips one/day) ·
 `--regenerate` re-compose even if staged content exists.

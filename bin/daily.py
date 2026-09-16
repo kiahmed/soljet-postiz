@@ -40,7 +40,7 @@ from _common import REPO_ROOT, integration_ids_for, load_dotenv, parse_since
 from src.lib import card_images, content_cache
 from src.lib.channel_dispatch import (
     channel_label, channel_media, channel_parts, cleanup_attach, deep_link_from_text)
-from src.lib.config_loader import _TIER_DIR_BY_ID, Tier, load_tier
+from src.lib.config_loader import Tier, known_tiers, load_tier
 from src.lib.imagery import auto_media
 from src.lib import posted_log
 from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
@@ -647,7 +647,7 @@ def main() -> int:
     if args.check:
         alive = workers_alive()
         print(f"Temporal workers polling: {'YES' if alive else 'NO — run: docker compose restart postiz'}")
-        for tid in ([args.tier] if args.tier else _TIER_DIR_BY_ID):
+        for tid in ([args.tier] if args.tier else known_tiers()):
             try:
                 t = load_tier(tid)
                 iids = integration_ids_for(t)
@@ -656,6 +656,20 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"  {tid:<20} → error: {e}")
         return 0 if alive else 1
+
+    # A posting/preview/regenerate run ALWAYS targets exactly one named tier —
+    # never "all". Bare `make post` used to sweep every tier; that's rejected now
+    # (a mis-set default publishing to live accounts is not a failure mode worth
+    # keeping). The scheduler passes TIER= per channels.conf row; humans pass it
+    # too. `--check` is the tier-less "show me everything" path. Checked before
+    # the Temporal pre-flight so it fails fast.
+    if not args.tier:
+        raise SystemExit(
+            "refusing: no tier selected. Pass TIER=<id> — e.g.\n"
+            "  make post TIER=arboryx.robotics\n"
+            "  make post-preview TIER=arboryx\n"
+            f"Known tiers: {', '.join(known_tiers())}\n"
+            "(`make check` lists every tier and its channels without composing.)")
 
     # Pre-flight: dead pollers strand posts in QUEUE, and a QUEUE'd post that
     # publishes later out of band is how duplicates happen. Fix it BEFORE
@@ -673,7 +687,7 @@ def main() -> int:
         print("WARNING: Temporal workers are not polling — posts will queue and not "
               "publish. Run `docker compose restart postiz` first.", file=sys.stderr)
 
-    tiers = [args.tier] if args.tier else list(_TIER_DIR_BY_ID)
+    tiers = [args.tier]
     if args.watch:
         if not args.push:
             raise SystemExit("--watch needs --push (preview would re-show the same card forever)")

@@ -41,6 +41,14 @@ def deep_link_for(tier: Tier, source_type: str, source_data: dict) -> str | None
     Returns None if the tier has no template configured or required vars are
     missing from `source_data`.
     """
+    # Facades · Simmer — per-ticker live board
+    if source_type == "simmer_api":
+        tmpl = tier.raw.get("PARENT_URL_TEMPLATE")
+        return _format(tmpl, {
+            "symbol": source_data.get("symbol") or "",
+            "expiry": source_data.get("expiry") or "",
+        })
+
     # Tier-2 (branch) — cards.json
     if source_type == "cards_json":
         tmpl = tier.raw.get("KG_CARD_URL_TEMPLATE")

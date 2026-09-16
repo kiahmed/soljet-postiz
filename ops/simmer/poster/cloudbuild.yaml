@@ -1,0 +1,12 @@
+# Build the simmer-poster image with the build context = repo root (the
+# Dockerfile COPYs bin/ src/ products/). `gcloud run deploy --source` can't
+# point at a non-root Dockerfile, so deploy.sh runs this then `run deploy --image`.
+#   gcloud builds submit . --config=ops/simmer/poster/cloudbuild.yaml --substitutions=_IMAGE=<ar image>
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}", "-f", "ops/simmer/poster/Dockerfile", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}"]
+images: ["${_IMAGE}"]
+options:
+  logging: CLOUD_LOGGING_ONLY

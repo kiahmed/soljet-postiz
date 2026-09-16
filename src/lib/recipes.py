@@ -88,6 +88,12 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
                 context=ctx,
             )
 
+        if ds.type == "simmer_api":
+            return _simmer_bundle(tier, item)
+
+        if ds.type == "matrix_api":
+            return _matrix_bundle(tier, item)
+
         if ds.type in ("cards_json", "firestore_cards"):
             related = src.get_related(source_id)
             link = deep_link_for(tier, "cards_json", item) or ""
@@ -132,6 +138,321 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
             context=ctx,
         )
     raise KeyError(f"source-id '{source_id}' not found in tier '{tier.id}'")
+
+
+# ---------- Simmer (Facades) — event-driven, deterministic templating ----------
+
+def _fmt_num(v, nd: int = 2, pct: bool = False, plus: bool = False) -> str | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if pct:
+        f = f * 100 if abs(f) <= 1.5 else f
+        return f"{f:.0f}%"
+    s = f"{f:.{nd}f}"
+    return f"+{s}" if plus and f >= 0 else s
+
+
+def compose_simmer(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
+    """Deterministic post text from Simmer engine state. No LLM — the numbers
+    ARE the message, and the post must equal the snapshot at publish time.
+
+    Two states: `watch_entered` ("started simmering") and `ready`
+    ("ready to serve"). Missing metrics degrade gracefully (watch cards can
+    carry nulls before the engine has a full read)."""
+    sym = (card.get("symbol") or "").upper()
+    st = card.get("state") or "watch_entered"
+    m = card.get("metrics") or {}
+    expiry = card.get("expiry") or ""
+    iv = _fmt_num(m.get("iv_pct"), pct=True)
+    vrp = _fmt_num(m.get("vrp"), nd=2)
+    em = _fmt_num(m.get("em_1sd"), nd=1)
+    news = card.get("sentiment") or {}
+    news_score = _fmt_num(news.get("score"), nd=2, plus=True)
+
+    bits: list[str]
+    if st == "ready":
+        bits = [f"${sym} is ready to serve."]
+        if iv or vrp:
+            bits.append("IV pct " + (iv or "n/a") + (f", VRP {vrp}" if vrp else "") + ".")
+        if em:
+            bits.append(f"Short strikes sit outside the GEX wall and the 1-SD move (±{em}).")
+        if expiry:
+            bits.append(f"Expiry {expiry}.")
+        if news_score:
+            bits.append(f"News read {news_score}.")
+        bits.append("A snapshot of engine state, not advice.")
+    else:  # watch_entered / simmering
+        bits = [f"${sym} just went on the stove."]
+        seg = []
+        if iv:
+            seg.append(f"IV pct {iv}")
+        if vrp:
+            seg.append(f"VRP {vrp}")
+        if em:
+            seg.append(f"expected move ±{em}")
+        if seg:
+            bits.append(", ".join(seg) + (f" into {expiry}." if expiry else "."))
+        bits.append("Watching the gates — we'll say when it's ready.")
+
+    if card.get("_off_hours_catalyst"):
+        bits.append("Alert generated while markets were closed, based on a "
+                    "catalyst and the last available options chain — check "
+                    "back at the next market open.")
+
+    text = " ".join(b for b in bits if b)
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def _simmer_bundle(tier: Tier, card: dict) -> PostBundle:
+    sym = (card.get("symbol") or "").upper()
+    link = deep_link_for(tier, "simmer_api", card) or card.get("url") or ""
+    text = compose_simmer(tier, card, max_chars=_budget_for_link(link))
+    text = append_link_to_text(text, link)
+    return PostBundle(
+        text=text,
+        source_type="simmer_api",
+        source_id=card.get("card_id") or card.get("id") or sym,
+        context={
+            "source_url": card.get("url") or "",
+            "sector": "Options income",
+            "title": (card.get("headline") or "")[:120],
+            "subtitle": f"{sym} · {card.get('state') or ''}",
+            "card": card,
+            "deep_link": link,
+        },
+    )
+
+
+def _minimal_simmer_card(source_id: str, symbol: str, state: str | None,
+                         expiry: str | None) -> dict:
+    """A card built from the Pub/Sub event alone — used when the read-only API
+    has no stored readiness for the ticker yet (event fired ahead of the engine
+    write, or a synthetic fire). compose_simmer degrades gracefully on the
+    missing metrics."""
+    sym = (symbol or "").upper()
+    st = state or "watch_entered"
+    return {
+        "card_id": source_id, "id": source_id, "symbol": sym, "state": st,
+        "expiry": (str(expiry)[:10] if expiry else ""),
+        "metrics": {}, "sentiment": {}, "gates": {},
+        "headline": f"${sym} — {'ready to serve' if st == 'ready' else 'started simmering'}",
+        "entities": [{"name": sym, "x_handle": f"${sym}" if sym else None,
+                      "linkedin_handle": None}],
+        "url": f"https://simmer.facades.trade/?symbol={sym}",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "_enrich": "minimal",
+    }
+
+
+def recipe_simmer(tier: Tier, source_id: str, *, state: str | None = None,
+                  symbol: str | None = None, expiry: str | None = None,
+                  off_hours_catalyst: bool = False) -> PostBundle:
+    """Simmer post for one ticker state-change. `state` (from the Pub/Sub event:
+    watch_entered | ready | …) overrides whatever the API's current decision
+    implies, so an event fired on the transition posts the right moment even if
+    the engine has moved on by the time we re-pull. If the read-only API has no
+    card for the ticker (KeyError), fall back to a minimal card from the event
+    attributes rather than dropping the post — `symbol` must then be given.
+
+    `off_hours_catalyst`: set by bin/simmer_poster.py only when the market is
+    actually closed AND the event itself carried the `off_hours_catalyst`
+    attribute (EdgeLane's call, not this function's) — makes
+    compose_simmer() append the disclaimer line (see docs/simmer_integration.md
+    §Market hours)."""
+    src = build_source(tier.sources[0], tier)
+    try:
+        card = src.get(source_id)
+    except KeyError:
+        if not symbol:
+            raise
+        card = _minimal_simmer_card(source_id, symbol, state, expiry)
+    if state:
+        card["state"] = state
+    if off_hours_catalyst:
+        card["_off_hours_catalyst"] = True
+    return _simmer_bundle(tier, card)
+
+
+# ---------- Matrix (Facades) — event-driven, deterministic templating ----------
+
+# Tag -> plain-English clause. Order matters: more specific combos are checked
+# first (HEALTHY+LIQ HIGH beats a bare HEALTHY). Never free text / an LLM
+# paraphrase — the copy can't drift from what the tags actually say.
+_MATRIX_TAG_CLAUSES: list[tuple[frozenset[str], str]] = [
+    (frozenset({"HEALTHY", "LIQ HIGH"}), "liquidity's deep enough to size into"),
+    (frozenset({"BROKEN"}), "the model's edge assumption didn't hold up"),
+    (frozenset({"MARGINAL"}), "on the edge — thin liquidity or a slim edge, worth a "
+                              "second look before sizing up"),
+    (frozenset({"TRADEABLE ON LIMIT"}), "workable, but only at a limit price, not the market"),
+    (frozenset({"DO NOT TRADE"}), "the engine is flagging this one to sit out"),
+    (frozenset({"HEALTHY"}), "the setup checks out clean"),
+]
+
+
+def _matrix_tag_clause(tags: list[str]) -> str | None:
+    have = {str(t).upper() for t in (tags or [])}
+    for wanted, clause in _MATRIX_TAG_CLAUSES:
+        if wanted <= have:
+            return clause
+    return None
+
+
+def _matrix_grid_tags(entry: dict) -> list[str]:
+    """Same HEALTHY/LIQ HIGH/TRADEABLE-ON-LIMIT reconstruction _to_card() does
+    for the primary pick, applied to one entry of the `grid` block (each of
+    the 8 candidate structures carries the same health/liquidity/verdict
+    shape)."""
+    tags = []
+    if entry.get("health"):
+        tags.append(str(entry["health"]).upper())
+    if entry.get("liquidity"):
+        tags.append(f"LIQ {str(entry['liquidity']).upper()}")
+    verdict = entry.get("composite_verdict") or {}
+    if verdict.get("label"):
+        tags.append(str(verdict["label"]).upper())
+    return tags
+
+
+def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
+    """Deterministic post text from Matrix engine state. No LLM — same rule as
+    compose_simmer(): the numbers and tags ARE the message.
+
+    Seven states across 6 moments (docs/matrix_integration.md §Post moments —
+    bias_aligned/bias_diverged are the two outcomes of one moment):
+    `pick_selected`, `bias_aligned`, `bias_diverged`, `win_rate_notable`,
+    `session_open`, `grid_digest`, `daily_recap`. All draw on whatever blocks
+    MatrixAPI.get() fetched (pick/bias/grid/win_eval/walls) — never on data
+    the card doesn't carry."""
+    sym = (card.get("symbol") or "").upper()
+    st = card.get("state") or "pick_selected"
+    strategy = card.get("strategy") or "a setup"
+    composite = _fmt_num(card.get("composite"), nd=1)
+    clause = _matrix_tag_clause(card.get("tags") or [])
+    hint = (card.get("hint_text") or "").strip()
+
+    bits: list[str]
+    if st == "daily_recap":
+        bits = [f"Best setup today on ${sym}: {strategy}"
+                + (f" (composite {composite})" if composite else "") + "."]
+        if clause:
+            bits.append(clause.capitalize() + ".")
+        grid = card.get("grid") or {}
+        if grid:
+            worst_key = min(grid, key=lambda k: grid[k].get("composite_score", 999) or 999)
+            worst = grid[worst_key] or {}
+            w_label = worst.get("label") or worst_key.replace("_", " ").title()
+            w_score = _fmt_num(worst.get("composite_score"), nd=1)
+            w_clause = _matrix_tag_clause(_matrix_grid_tags(worst))
+            line = f"Weakest: {w_label}" + (f" (composite {w_score})" if w_score else "") + "."
+            if w_clause:
+                line += f" {w_clause.capitalize()}."
+            bits.append(line)
+    elif st == "bias_aligned":
+        bits = [f"${sym} — the bias read now agrees with the engine's pick ({strategy})."]
+    elif st == "bias_diverged":
+        bits = [f"${sym} — the bias read is diverging from the engine's pick ({strategy})."]
+    elif st == "win_rate_notable":
+        wr = card.get("win_rate")
+        graded = card.get("graded")
+        if wr is not None and graded:
+            bits = [f"${sym}'s win-eval grid: {wr:.0f}% win rate over {graded} graded trades on {strategy}."]
+        else:
+            bits = [f"${sym}'s win-eval grid just turned a corner on {strategy}."]
+    elif st == "session_open":
+        walls = (card.get("walls") or {}).get("key_levels") or {}
+        cw, pw = walls.get("call_wall"), walls.get("put_wall")
+        if cw is not None or pw is not None:
+            bits = [f"${sym} — today's walls: call {_fmt_num(cw, nd=0) or cw}, "
+                    f"put {_fmt_num(pw, nd=0) or pw}."]
+        else:
+            bits = [f"${sym} — today's session open."]
+    elif st == "grid_digest":
+        grid = card.get("grid") or {}
+        n = len(grid)
+        tradeable = sum(1 for v in grid.values()
+                        if (v.get("composite_verdict") or {}).get("mode") not in (None, "skip", "wait"))
+        if n:
+            bits = [f"This week's strategy grid for ${sym} — {n} setups scored, {tradeable} tradeable."]
+        else:
+            bits = [f"This week's strategy grid for ${sym} — a look at all the setups."]
+    else:  # pick_selected (default)
+        bits = [f"${sym} — engine pick: {strategy}"
+                + (f". Composite {composite}" if composite else "") + "."]
+        if clause:
+            bits.append(clause.capitalize() + ".")
+    if hint:
+        bits.append(hint)
+    bits.append("A snapshot of engine state, not advice.")
+
+    text = " ".join(b for b in bits if b)
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def _matrix_bundle(tier: Tier, card: dict) -> PostBundle:
+    sym = (card.get("symbol") or "").upper()
+    link = deep_link_for(tier, "matrix_api", card) or card.get("url") or ""
+    text = compose_matrix(tier, card, max_chars=_budget_for_link(link))
+    text = append_link_to_text(text, link)
+    return PostBundle(
+        text=text,
+        source_type="matrix_api",
+        source_id=card.get("card_id") or card.get("id") or sym,
+        context={
+            "source_url": card.get("url") or "",
+            "sector": "Options income",
+            "title": (card.get("headline") or "")[:120],
+            "subtitle": f"{sym} · {card.get('state') or ''}",
+            "card": card,
+            "deep_link": link,
+        },
+    )
+
+
+def _minimal_matrix_card(source_id: str, symbol: str, state: str | None,
+                         expiry: str | None = None) -> dict:
+    """A card built from the Pub/Sub event alone — used when the read-only API
+    has no stored pick for the ticker (the API doesn't exist yet at all, as of
+    this writing — see docs/matrix_integration.md — so this is the path every
+    real event takes until EdgeLane ships /matrix/state/<SYM>).
+    compose_matrix degrades gracefully on the missing composite/tags."""
+    sym = (symbol or "").upper()
+    st = state or "pick_selected"
+    return {
+        "card_id": source_id, "id": source_id, "symbol": sym, "state": st,
+        "expiry": (str(expiry)[:10] if expiry else ""),
+        "strategy": None, "composite": None, "tags": [], "hint_text": None,
+        "headline": f"${sym} — Matrix {st.replace('_', ' ')}",
+        "entities": [{"name": sym, "x_handle": f"${sym}" if sym else None,
+                      "linkedin_handle": None}],
+        "url": f"https://matrix.facades.trade/?symbol={sym}",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "_enrich": "minimal",
+    }
+
+
+def recipe_matrix(tier: Tier, source_id: str, *, state: str | None = None,
+                  symbol: str | None = None, expiry: str | None = None) -> PostBundle:
+    """Matrix post for one symbol's state-change. `state` (from the Pub/Sub
+    event) overrides whatever the API's current read implies. If the read-only
+    API has no card for the ticker (KeyError — currently ALWAYS, until
+    EdgeLane ships the endpoint), fall back to a minimal card from the event
+    attributes rather than dropping the post — `symbol` must then be given."""
+    src = build_source(tier.sources[0], tier)
+    try:
+        card = src.get(source_id)
+    except KeyError:
+        if not symbol:
+            raise
+        card = _minimal_matrix_card(source_id, symbol, state, expiry)
+    if state:
+        card["state"] = state
+    return _matrix_bundle(tier, card)
 
 
 def recipe_narrative(tier: Tier, slug: str, repo_root: Path) -> PostBundle:

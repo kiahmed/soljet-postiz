@@ -2,8 +2,9 @@
 .env
 auth/
 .claude/
-# Real handles file holds live Postiz ids — commit handles.example.yaml instead
+# Real handles files hold live Postiz ids — commit the *.example.yaml instead
 products/arboryx.ai/handles.yaml
+products/facades/facades_handles.yaml
 
 # Logs
 *.log
@@ -28,6 +29,10 @@ data/content_cache/
 data/manual-post-queue.md
 data/linkedin_urn_cache.json
 data/render_gcs_cache.json
+# bin/simmer_poster.py local-mode dedupe (per-machine)
+data/simmer_poster_dedupe.json
+data/matrix_poster_dedupe.json
+data/matrix_poster_state_gaps.json
 
 # Postiz DB/media export for machine migration — contains LIVE OAuth tokens
 # and the Postiz login hash. Move by hand (scp/USB); never commit.

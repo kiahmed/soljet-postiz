@@ -6,12 +6,15 @@
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
+        simmer-preflight simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
+        matrix-preflight matrix-poster matrix-sub-local matrix-serve matrix-event matrix-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
-KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS
+KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS \
+              KEEP MODE EVENT PART SUB
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -91,19 +94,22 @@ heal-check:     ## Report Temporal+worker health only (no restart); exit 1 if un
 check:          ## Daily poster's view: worker pollers + each tier's channels
 	$(PYTHON) bin/daily.py --check
 
+# TIER= is REQUIRED for post / post-preview / regenerate — a run always targets
+# exactly one named tier, never "all" (bin/daily.py refuses without it). Use
+# `make check` for the tier-less overview.
 # Optional knobs for ALL post targets below:
 #   OLDEST=1               oldest unposted entry instead of newest
 #   CHANNEL=linkedin|x     one channel only (default: all the tier's channels)
-#   TIER=arboryx.robotics  one tier only (default: all enabled tiers)
+#   TIER=arboryx.robotics  REQUIRED — the one tier to operate on
 _POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only)$(if $(WATCH), --watch $(WATCH))$(if $(POLL), --poll $(POLL)) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
 
-post-preview:   ## Compose posts, DO NOT publish [OLDEST=1] [CHANNEL=] [TIER=]
+post-preview:   ## Compose posts, DO NOT publish — TIER= required [OLDEST=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py $(_POSTOPTS)
 
-regenerate:     ## Re-compose + re-stage (discard staged), no publish [OLDEST=1] [CHANNEL=] [TIER=]
+regenerate:     ## Re-compose + re-stage (discard staged), no publish — TIER= required [OLDEST=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py --regenerate $(_POSTOPTS)
 
-post:           ## Publish posts [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=] [TIER=]
+post:           ## Publish posts — TIER= required [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=]
 	$(PYTHON) bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
@@ -129,6 +135,52 @@ social-cache-clean:  ## Drop matching entries so they re-resolve (usage: make so
 
 social-cache-update: ## Re-resolve matching entries live (usage: make social-cache-update <channel> <entity...>)
 	@$(PYTHON) bin/social-cache.py update $(filter-out $@,$(MAKECMDGOALS))
+
+# ---- Facades · Simmer (event-driven product; bin/simmer_poster.py) ------
+# No scheduler: the Simmer engine publishes state-change events to Pub/Sub and
+# the poster (Cloud Run in prod) consumes them. These targets are for local
+# work. See ops/simmer/README.md.
+simmer-preflight:   ## Check every GCP + .env dependency for Simmer (green OK / red FAIL). ops/simmer/preflight.sh <product> for others.
+	@./ops/simmer/preflight.sh simmer
+
+simmer-e2e:         ## Full local e2e: Pub/Sub emulator + stubs + real Postiz DRAFTs [--keep]
+	@./ops/simmer/dev/run-e2e.sh $(if $(KEEP),--keep)
+
+simmer-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1] [SUB=<subscription>]
+	$(PYTHON) bin/simmer_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run) $(if $(SUB),--sub $(SUB))
+
+simmer-sub-local:   ## Create a PULL subscription on the real facades.ticker-events topic for local validation (DRY=1 to print)
+	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer --sub-local
+
+simmer-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
+	$(PYTHON) bin/simmer_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+simmer-event:       ## Process one inline event (usage: make simmer-event EVENT='{"product":"simmer",...}') [MODE=] [DRY=1]
+	$(PYTHON) bin/simmer_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+simmer-deploy:      ## Provision Simmer's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
+	@DRY=$(DRY) ./ops/simmer/deploy.sh simmer $(PART)
+
+# ---- Facades · Matrix (event-driven product; bin/matrix_poster.py) ------
+# Own topic (facades.matrix-events), own poster/snap containers — NOT a
+# --product flag on the Simmer targets above. See docs/matrix_integration.md.
+matrix-preflight:   ## Check every GCP + .env dependency for Matrix (green OK / red FAIL)
+	@./ops/matrix/preflight.sh matrix
+
+matrix-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1] [SUB=<subscription>]
+	$(PYTHON) bin/matrix_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run) $(if $(SUB),--sub $(SUB))
+
+matrix-sub-local:   ## Create a PULL subscription on the real facades.matrix-events topic for local validation (DRY=1 to print)
+	@DRY=$(DRY) ./ops/matrix/deploy.sh matrix --sub-local
+
+matrix-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
+	$(PYTHON) bin/matrix_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+matrix-event:       ## Process one inline event (usage: make matrix-event EVENT='{"product":"matrix",...}') [MODE=] [DRY=1]
+	$(PYTHON) bin/matrix_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+matrix-deploy:      ## Provision Matrix's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
+	@DRY=$(DRY) ./ops/matrix/deploy.sh matrix $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,

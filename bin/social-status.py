@@ -32,12 +32,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from bin._common import load_dotenv, integration_ids_for  # noqa: E402
-from src.lib.config_loader import load_tier  # noqa: E402
+from src.lib.config_loader import known_tiers, load_tier  # noqa: E402
 from src.lib import posted_log  # noqa: E402
 
 import os  # noqa: E402
 
-TIERS = ["arboryx", "arboryx.robotics"]
+TIERS = known_tiers()
 PG_CONTAINER = os.environ.get("POSTIZ_PG_CONTAINER", "postiz-postgres")
 
 

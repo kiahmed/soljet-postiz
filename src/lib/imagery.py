@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -87,6 +88,21 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
         return bundle.media_paths
 
     ctx = bundle.context or {}
+
+    # 1b. Simmer (Facades): the per-product Cloud Run screenshot service is the
+    #     ONLY image source for a simmer_api post. It either snaps the live board
+    #     crop or the post goes out text-only — never the KG-graph / LLM ladder
+    #     below (wrong content, and slow).
+    if bundle.source_type == "simmer_api":
+        snap = _simmer_snap(tier, bundle, ctx)
+        return [snap] if snap else []
+
+    # 1c. Matrix (Facades): same rule, its own per-product Cloud Run screenshot
+    #     service, but multi-view (engine_pick/strategy_grid/bias_chip/
+    #     walls_chip/win_eval_grid) since Matrix has several post moments.
+    if bundle.source_type == "matrix_api":
+        snap = _matrix_snap(tier, bundle, ctx)
+        return [snap] if snap else []
 
     # 2. Deep-link funnel — when a deep link was injected into the post text
     #    and the tier opts in to LET_PLATFORM_RENDER_LINK_CARD (default true),
@@ -147,6 +163,90 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
 
     # 7. None
     return []
+
+
+def _simmer_snap(tier: Tier, bundle: PostBundle, ctx: dict) -> Path | None:
+    """POST {symbol, expiry, state} to the per-product screenshot Cloud Run
+    (CARD_RENDER_PROVIDER=simmer_snap, SIMMER_SNAP_URL) and cache the PNG crop
+    of the Simmer board. Private service → OIDC token from
+    GOOGLE_APPLICATION_CREDENTIALS for a *.run.app host. Never raises; None on
+    any failure so the post still goes out (text-only) rather than being lost."""
+    raw = getattr(tier, "raw", {}) or {}
+    if str(raw.get("CARD_RENDER_PROVIDER", "")).strip().lower() != "simmer_snap":
+        return None
+    url = str(raw.get("SIMMER_SNAP_URL") or os.getenv("SIMMER_SNAP_URL") or "").strip()
+    card = ctx.get("card") or {}
+    symbol = (card.get("symbol") or "").upper()
+    if not url or not symbol:
+        return None
+    out = CACHE_DIR / f"simmer_snap_{_hash(bundle.source_id or symbol)}.png"
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+    body = json.dumps({
+        "symbol": symbol,
+        "expiry": card.get("expiry") or "",
+        "state": card.get("state") or "",
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "simmer-poster/1.0"}
+    try:
+        from .sources.simmer_source import _oidc_token
+        from urllib.parse import urlsplit
+        if ".run.app" in url:
+            p = urlsplit(url)
+            tok = _oidc_token(f"{p.scheme}://{p.netloc}")
+            if tok:
+                headers["Authorization"] = f"Bearer {tok}"
+        r = requests.post(url, data=body, headers=headers, timeout=45)
+        if r.status_code >= 400 or not r.content:
+            return None
+        out.write_bytes(r.content)
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _matrix_snap(tier: Tier, bundle: PostBundle, ctx: dict) -> Path | None:
+    """POST {symbol, expiry, state, view} to the per-product screenshot Cloud
+    Run (CARD_RENDER_PROVIDER=matrix_snap, MATRIX_SNAP_URL) and cache the PNG
+    crop for the given moment's view (src/lib/sources/matrix_source.py::
+    STATE_VIEW maps state -> view). Private service -> OIDC token, same as
+    _simmer_snap. Never raises; None on any failure so the post still goes out
+    (text-only) rather than being lost."""
+    raw = getattr(tier, "raw", {}) or {}
+    if str(raw.get("CARD_RENDER_PROVIDER", "")).strip().lower() != "matrix_snap":
+        return None
+    url = str(raw.get("MATRIX_SNAP_URL") or os.getenv("MATRIX_SNAP_URL") or "").strip()
+    card = ctx.get("card") or {}
+    symbol = (card.get("symbol") or "").upper()
+    if not url or not symbol:
+        return None
+    from .sources.matrix_source import STATE_VIEW
+    view = STATE_VIEW.get(card.get("state") or "", "engine_pick")
+    out = CACHE_DIR / f"matrix_snap_{_hash((bundle.source_id or symbol) + view)}.png"
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+    body = json.dumps({
+        "symbol": symbol,
+        "expiry": card.get("expiry") or "",
+        "state": card.get("state") or "",
+        "view": view,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "matrix-poster/1.0"}
+    try:
+        from .sources.simmer_source import _oidc_token  # shared OIDC helper
+        from urllib.parse import urlsplit
+        if ".run.app" in url:
+            p = urlsplit(url)
+            tok = _oidc_token(f"{p.scheme}://{p.netloc}")
+            if tok:
+                headers["Authorization"] = f"Bearer {tok}"
+        r = requests.post(url, data=body, headers=headers, timeout=45)
+        if r.status_code >= 400 or not r.content:
+            return None
+        out.write_bytes(r.content)
+        return out
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _og_card_image(ctx: dict) -> Path | None:
