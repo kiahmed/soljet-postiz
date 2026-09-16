@@ -48,12 +48,17 @@ def deep_link_from_text(text: str) -> str | None:
 
 
 def attach_media(client, tier, source_type: str, source_id: str,
-                 parts: list[str], text: str) -> tuple[list[dict], list[Path]]:
+                 parts: list[str], text: str, *, label: str | None = None
+                 ) -> tuple[list[dict], list[Path]]:
     """Media for an 'attach' channel (e.g. LinkedIn): run the imagery ladder in
     force-attach mode — prefers the destination's per-card og:image PNG, falling
     back to the entity graph — then upload to Postiz. Returns (uploaded, local
     paths); the caller deletes the local paths after a successful post. ([], [])
-    if nothing resolves (caller degrades to link_card). Never raises."""
+    if nothing resolves (caller degrades to link_card). Never raises.
+
+    `label` (channel name) gates the second catalyst-graph image per
+    GRAPH_IMAGE_POLICY_<CHANNEL> (docs/graph-posters.md) — passed through to
+    auto_media so e.g. LinkedIn can get [card, graph] while X gets [card]."""
     ctx: dict = {}
     dl = deep_link_from_text(text)
     if dl:
@@ -66,7 +71,7 @@ def attach_media(client, tier, source_type: str, source_id: str,
     bundle = PostBundle(text=text, source_type=source_type, source_id=source_id,
                         parts=parts, context=ctx)
     try:
-        paths = auto_media(tier, bundle, "single", force_attach=True)
+        paths = auto_media(tier, bundle, "single", force_attach=True, channel_label=label)
     except Exception:  # noqa: BLE001
         return [], []
     out, locals_ = [], []
@@ -86,8 +91,11 @@ def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
                   attach_cache):
     """Resolve the media list for ONE channel per its imagery policy.
 
-    Returns (media_list, attach_cache). attach_cache (a dict {media, paths} for
-    'attach' tiers) memoizes the upload across channels — pass it back in.
+    Returns (media_list, attach_cache). attach_cache (a dict keyed by lowercased
+    channel label, each value {media, paths}) memoizes uploads per channel —
+    pass it back in. Keyed per-channel (not shared) because GRAPH_IMAGE_POLICY
+    can differ between 'attach' channels (e.g. LinkedIn gets [card, graph], X
+    gets [card] only) — see docs/graph-posters.md.
     `cleanup_attach(attach_cache)` deletes the downloaded local files after a
     successful post.
     """
@@ -97,10 +105,13 @@ def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
     if policy == "link_card":
         return [], attach_cache
     if policy == "attach":
-        if attach_cache is None:
-            media, locals_ = attach_media(client, tier, source_type, source_id, parts, text)
-            attach_cache = {"media": media, "paths": locals_}
-        return (attach_cache.get("media") or []), attach_cache
+        attach_cache = attach_cache or {}
+        key = label.lower()
+        if key not in attach_cache:
+            media, locals_ = attach_media(client, tier, source_type, source_id,
+                                          parts, text, label=label)
+            attach_cache[key] = {"media": media, "paths": locals_}
+        return (attach_cache[key].get("media") or []), attach_cache
     return base_media, attach_cache  # legacy single-decision behavior
 
 
@@ -108,11 +119,14 @@ def cleanup_attach(attach_cache) -> None:
     """Delete the local attach images downloaded for this post (call after a
     successful publish so data/imagery_cache doesn't accumulate one-shot PNGs)."""
     if isinstance(attach_cache, dict):
-        for p in attach_cache.get("paths") or []:
-            try:
-                Path(p).unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+        for entry in attach_cache.values():
+            if not isinstance(entry, dict):
+                continue
+            for p in entry.get("paths") or []:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def tier_has_channel_policy(tier) -> bool:

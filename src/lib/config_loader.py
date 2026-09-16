@@ -115,6 +115,9 @@ class Tier:
     # Per-channel imagery policy, keyed by lowercased channel name
     # ("x", "linkedin"): "link_card" | "attach". Absent channel → legacy behavior.
     imagery_policy: dict = field(default_factory=dict)
+    # Per-channel graph-image policy (docs/graph-posters.md), keyed the same
+    # way: "none" | "second_image". Absent channel → "none".
+    graph_image_policy: dict = field(default_factory=dict)
 
 
 def _parse_config(path: Path) -> dict:
@@ -167,6 +170,15 @@ def _collect_imagery_policy(raw: dict) -> dict[str, str]:
     return out
 
 
+def _collect_graph_image_policy(raw: dict) -> dict[str, str]:
+    """GRAPH_IMAGE_POLICY_<CHANNEL>=<policy> → {channel_lower: policy_lower}."""
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if k.startswith("GRAPH_IMAGE_POLICY_") and v:
+            out[k.replace("GRAPH_IMAGE_POLICY_", "", 1).lower()] = v.strip().lower()
+    return out
+
+
 def _collect_channels(raw: dict) -> list[str]:
     out = []
     for k, v in raw.items():
@@ -210,6 +222,9 @@ def load_tier(tier_id: str) -> Tier:
     imagery_policy = dict(parent.imagery_policy) if parent else {}
     imagery_policy.update(_collect_imagery_policy(raw))
 
+    graph_image_policy = dict(parent.graph_image_policy) if parent else {}
+    graph_image_policy.update(_collect_graph_image_policy(raw))
+
     return Tier(
         id=raw["TIER_ID"],
         name=raw.get("TIER_NAME", raw["TIER_ID"]),
@@ -222,6 +237,7 @@ def load_tier(tier_id: str) -> Tier:
         purpose=raw.get("POSTING_PURPOSE", ""),
         sectors=sectors,
         imagery_policy=imagery_policy,
+        graph_image_policy=graph_image_policy,
     )
 
 
