@@ -15,9 +15,9 @@ OUT="${1:-$DIR/crontab}"
   echo "# Times are in the container TZ (SCHEDULER_TZ in .env; default Etc/GMT+5)."
   echo "#"
   echo "# min hour dom mon dow   command"
-  while IFS=$'\t' read -r channel count delay tier cron; do
-    printf '%s   /app/ops/scheduler/run-daily.sh %s %s %s %s >> /app/data/daily.log 2>&1\n' \
-      "$cron" "$channel" "$count" "$delay" "$tier"
+  while IFS=$'\t' read -r channel count delay tier kind cron; do
+    printf '%s   /app/ops/scheduler/run-daily.sh %s %s %s %s %s >> /app/data/daily.log 2>&1\n' \
+      "$cron" "$channel" "$count" "$delay" "$tier" "$kind"
   done < <(sched_rows)
   echo "#"
   echo "# Watchdog: sleep/wake resumes containers without a boot, so boot-time"
