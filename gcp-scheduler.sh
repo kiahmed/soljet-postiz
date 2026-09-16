@@ -47,21 +47,24 @@ gc() {  # echo-or-exec gcloud
   if [ "${DRY:-}" = "1" ]; then printf '  + gcloud %s\n' "$*"; else gcloud "$@"; fi
 }
 
-job_name() { echo "postiz-daily-$1"; }
+# kind="card" keeps the pre-existing bare name so already-deployed jobs are
+# never silently renamed/orphaned by this change; only a non-card kind (e.g.
+# "graph", docs/graph-posters.md) gets a distinct suffix.
+job_name() { [ "${2:-card}" = "card" ] && echo "postiz-daily-$1" || echo "postiz-daily-$1-$2"; }
 
 job_exists() {
   [ "${DRY:-}" = "1" ] && return 1
-  gcloud scheduler jobs describe "$(job_name "$1")" \
+  gcloud scheduler jobs describe "$(job_name "$1" "$2")" \
     --project="$PROJECT" --location="$REGION" >/dev/null 2>&1
 }
 
 create_jobs() {
-  while IFS=$'\t' read -r channel count delay tier cron; do
-    local name body verb hdr; name="$(job_name "$channel")"
-    body="$(printf '{"channel":"%s","count":"%s","delay":"%s","tier":"%s"}' "$channel" "$count" "$delay" "$tier")"
+  while IFS=$'\t' read -r channel count delay tier kind cron; do
+    local name body verb hdr; name="$(job_name "$channel" "$kind")"
+    body="$(printf '{"channel":"%s","count":"%s","delay":"%s","tier":"%s","kind":"%s"}' "$channel" "$count" "$delay" "$tier" "$kind")"
     # gcloud quirk: `create http` takes --headers, `update http` takes --update-headers.
-    if job_exists "$channel"; then verb=update; hdr=--update-headers; else verb=create; hdr=--headers; fi
-    echo "==> $verb $name  ('$cron' $TZ_)  count=$count delay=$delay tier=$tier"
+    if job_exists "$channel" "$kind"; then verb=update; hdr=--update-headers; else verb=create; hdr=--headers; fi
+    echo "==> $verb $name  ('$cron' $TZ_)  count=$count delay=$delay tier=$tier kind=$kind"
     gc scheduler jobs "$verb" http "$name" \
       --project="$PROJECT" --location="$REGION" \
       --schedule="$cron" --time-zone="$TZ_" \
@@ -73,25 +76,25 @@ create_jobs() {
 }
 
 delete_jobs() {
-  while IFS=$'\t' read -r channel _count _delay _tier _cron; do
-    echo "==> delete $(job_name "$channel")"
-    gc scheduler jobs delete "$(job_name "$channel")" \
+  while IFS=$'\t' read -r channel _count _delay _tier kind _cron; do
+    echo "==> delete $(job_name "$channel" "$kind")"
+    gc scheduler jobs delete "$(job_name "$channel" "$kind")" \
       --project="$PROJECT" --location="$REGION" --quiet || true
   done < <(sched_rows)
 }
 
 run_jobs() {
-  while IFS=$'\t' read -r channel _count _delay _tier _cron; do
-    echo "==> run now: $(job_name "$channel")"
-    gc scheduler jobs run "$(job_name "$channel")" --project="$PROJECT" --location="$REGION"
+  while IFS=$'\t' read -r channel _count _delay _tier kind _cron; do
+    echo "==> run now: $(job_name "$channel" "$kind")"
+    gc scheduler jobs run "$(job_name "$channel" "$kind")" --project="$PROJECT" --location="$REGION"
   done < <(sched_rows)
 }
 
 # Print each job's cron + decoded request body (the count/delay/tier that GCP
 # POSTs to the trigger live base64-encoded in the body). Read-only.
 show_jobs() {
-  while IFS=$'\t' read -r channel _c _d _t _cron; do
-    local name; name="$(job_name "$channel")"
+  while IFS=$'\t' read -r channel _c _d _t kind _cron; do
+    local name; name="$(job_name "$channel" "$kind")"
     echo "== $name =="
     gcloud scheduler jobs describe "$name" --project="$PROJECT" --location="$REGION" --format=json 2>/dev/null \
       | python3 -c "import sys,json,base64

@@ -11,7 +11,11 @@ NEVER block the response on it — the job runs detached and logs to data/daily.
 
 Endpoints:
   GET  /healthz            -> 200 "ok"
-  POST /run                -> 202; body {"channel","count"?,"delay"?,"tier"?}
+  POST /run                -> 202; body {"channel","count"?,"delay"?,"tier"?,"kind"?}
+                              kind: "card" (default) | "graph" — see
+                              docs/graph-posters.md. Must match a row in
+                              channels.conf for (channel, kind); channel alone
+                              is not enough once a channel has both kinds.
                               header  Authorization: Bearer $SCHEDULER_TRIGGER_TOKEN
 
 Env:
@@ -33,7 +37,9 @@ LOG = os.path.join(REPO, "data", "daily.log")
 
 
 def _load_channels():
-    """{channel: (count, delay, tier)} from channels.conf — the whitelist."""
+    """{(channel, kind): (count, delay, tier)} from channels.conf — the
+    whitelist. Keyed on (channel, kind), not channel alone, since a channel
+    can now have both a card row and a graph row (docs/graph-posters.md)."""
     conf = os.path.join(HERE, "channels.conf")
     out = {}
     with open(conf) as fh:
@@ -42,10 +48,11 @@ def _load_channels():
             if not line:
                 continue
             parts = [c.strip() for c in line.split("|")]
-            if len(parts) < 4 or not parts[0]:
+            if len(parts) < 5 or not parts[0]:
                 continue
-            ch, count, delay, tier = parts[0], parts[1], parts[2], parts[3]
-            out[ch] = (count, delay, tier)
+            ch, count, delay, tier, kind = parts[0], parts[1], parts[2], parts[3], parts[4]
+            kind = kind or "card"
+            out[(ch, kind)] = (count, delay, tier)
     return out
 
 
@@ -95,10 +102,14 @@ class Handler(BaseHTTPRequestHandler):
 
         channels = _load_channels()
         channel = str(payload.get("channel", "")).strip()
-        if channel not in channels:
-            # whitelist: never exec an arbitrary channel string
-            return self._reply(400, f"unknown channel {channel!r}; known: {','.join(channels) or '(none)'}")
-        d_count, d_delay, d_tier = channels[channel]
+        kind = str(payload.get("kind", "card")).strip() or "card"
+        if kind not in ("card", "graph"):
+            return self._reply(400, f"bad kind {kind!r}; must be 'card' or 'graph'")
+        if (channel, kind) not in channels:
+            # whitelist: never exec an arbitrary channel/kind string
+            known = ",".join(f"{c}/{k}" for c, k in channels) or "(none)"
+            return self._reply(400, f"unknown channel/kind {channel!r}/{kind!r}; known: {known}")
+        d_count, d_delay, d_tier = channels[(channel, kind)]
         count = str(payload.get("count", d_count)).strip() or d_count
         delay = str(payload.get("delay", d_delay)).strip() or d_delay
         tier = str(payload.get("tier", d_tier)).strip() or d_tier
@@ -113,13 +124,13 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         logf = open(LOG, "a")
         subprocess.Popen(
-            ["/usr/bin/env", "bash", RUN_DAILY, channel, count, delay, tier],
+            ["/usr/bin/env", "bash", RUN_DAILY, channel, count, delay, tier, kind],
             cwd=REPO, stdout=logf, stderr=logf, start_new_session=True,
             # exempt this run from run-daily.sh's "GCP mode -> local stands down"
             # guard: the trigger IS the GCP path.
             env={**os.environ, "SCHED_VIA_TRIGGER": "1"},
         )
-        return self._reply(202, f"accepted: channel={channel} count={count} delay={delay} tier={tier}")
+        return self._reply(202, f"accepted: channel={channel} kind={kind} count={count} delay={delay} tier={tier}")
 
 
 def main():

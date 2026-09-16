@@ -32,13 +32,20 @@ _GCS_CACHE_PATH = REPO_ROOT / "data" / "render_gcs_cache.json"
 _GCS_CACHE_TTL = 900  # 15 min — matches the scheduler watchdog cadence
 
 
-def _gcs_config(tier) -> tuple[str, str] | None:
-    """(bucket, prefix) for this tier's production render bucket, or None."""
+def _gcs_config(tier, kind: str = "cards") -> tuple[str, str] | None:
+    """(bucket, prefix) for this tier's production render bucket, or None.
+
+    kind="graphs" reads RENDER_GCS_GRAPH_PREFIX instead — the entity-subgraph
+    PNG rendered alongside each card (same bucket, sibling prefix; see
+    docs/graph-posters.md). Same bucket requirement as cards: no bucket set →
+    no pipeline at all, regardless of kind."""
     raw = getattr(tier, "raw", {}) or {}
     bucket = str(raw.get("RENDER_GCS_BUCKET", "") or "").strip()
     if not bucket:
         return None
-    prefix = str(raw.get("RENDER_GCS_PREFIX", "") or "cards").strip().strip("/")
+    key = "RENDER_GCS_GRAPH_PREFIX" if kind == "graphs" else "RENDER_GCS_PREFIX"
+    default = "graphs" if kind == "graphs" else "cards"
+    prefix = str(raw.get(key, "") or default).strip().strip("/")
     return bucket, prefix
 
 
@@ -63,16 +70,16 @@ def _gcs_list_ids(bucket: str, prefix: str) -> set[str] | None:
         return None
 
 
-def _gcs_rendered_ids(tier) -> set[str] | None:
+def _gcs_rendered_ids(tier, kind: str = "cards") -> set[str] | None:
     """Cached (TTL 15 min) set of rendered card_ids from GCS. Positive results
     are effectively permanent (a render is never un-rendered); the cache exists
     to avoid re-listing 500+ objects on every invocation, not because the data
     goes stale quickly."""
-    cfg = _gcs_config(tier)
+    cfg = _gcs_config(tier, kind)
     if not cfg:
         return None
     bucket, prefix = cfg
-    key = f"{bucket}/{prefix}"
+    key = f"{bucket}/{prefix}"  # prefix differs by kind, so cards/graphs never collide
     cache: dict = {}
     try:
         cache = json.loads(_GCS_CACHE_PATH.read_text())
@@ -130,6 +137,19 @@ def has_render(tier, card_id: str) -> bool:
     if not d or not d.is_dir():
         return False
     return (d / f"{card_id}.png").is_file()
+
+
+def has_graph(tier, card_id: str) -> bool:
+    """True if this card's entity-subgraph PNG exists in gs://<bucket>/graphs/.
+    GCS-only (no local dev-dir fallback — graphs are only ever produced in
+    production, per docs/graph-posters.md). False for tiers with no render
+    bucket configured, and false (not true!) if GCS is unreachable — a missing
+    graph is "not ready", never an error, so callers must fail closed exactly
+    like has_render()."""
+    if not card_id:
+        return False
+    ids = _gcs_rendered_ids(tier, kind="graphs")
+    return card_id in ids if ids is not None else False
 
 
 def renders_available(tier) -> bool:

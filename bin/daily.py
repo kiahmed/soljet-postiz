@@ -46,7 +46,7 @@ from src.lib import posted_log
 from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
 from src.lib.postiz_client import PostizClient
 from src.lib.composer import card_confidence
-from src.lib.recipes import PostBundle, recipe_single
+from src.lib.recipes import PostBundle, recipe_graph, recipe_single
 from src.lib.thread import split_for_thread
 
 # Postgres/Temporal live in docker on the same host as this script.
@@ -164,6 +164,39 @@ def reconcile_pending(tier_id: str) -> None:
 
 # ---------------------------------------------------------------- helpers
 
+def _bk(tier_id: str, kind: str) -> str:
+    """Bookkeeping key for posted_log/content_cache — the SAME card posts as a
+    card and (later, separately) as a graph, and each must be tracked
+    independently so posting one doesn't mark the other as done. kind="card"
+    (the default, pre-existing behavior) maps to the bare tier id so every
+    existing row keeps working unchanged; any other kind gets a distinct
+    suffix. See docs/graph-posters.md."""
+    return tier_id if kind == "card" else f"{tier_id}:{kind}"
+
+
+def _ready(tier: Tier, source_id: str, kind: str) -> bool:
+    """Does this item have the image its kind needs? card -> rendered card
+    PNG; graph -> rendered entity-subgraph PNG. Fails closed either way."""
+    return card_images.has_graph(tier, source_id) if kind == "graph" \
+        else card_images.has_render(tier, source_id)
+
+
+def _requires_ready(tier: Tier, kind: str) -> bool:
+    return True if kind == "graph" else card_images.requires_render(tier)
+
+
+def _kind_channel_enabled(tier: Tier, kind: str, label: str) -> bool:
+    """Per-kind, per-channel kill switch (docs/graph-posters.md), e.g.
+    GRAPH_POST_X_ENABLED="false" turns X off for kind="graph" ONLY — that
+    channel's card-post schedule is untouched, and no live GCP Cloud
+    Scheduler job needs to change to flip this. Card kind is never gated
+    here (unchanged, pre-existing behavior)."""
+    if kind == "card":
+        return True
+    key = f"{kind.upper()}_POST_{label.upper()}_ENABLED"
+    return str(tier.raw.get(key, "true")).strip().lower() != "false"
+
+
 def _x_min_confidence(tier) -> float:
     """X_MIN_CONFIDENCE from tier.config ('' = gate off). X posts cost real
     money and land on a curated channel; LinkedIn takes everything."""
@@ -177,7 +210,8 @@ def _x_min_confidence(tier) -> float:
 def pick_unposted(tier: Tier, since, *, oldest: bool = False,
                   ready_only: bool = False,
                   exclude: set[str] | None = None,
-                  want_channels: set[str] | None = None) -> str | None:
+                  want_channels: set[str] | None = None,
+                  kind: str = "card") -> str | None:
     """Newest (default) or oldest unposted item from the tier's PRIMARY source.
 
     Each tier's DATA_SOURCE_1 is its intended daily feed (arboryx→firestore
@@ -187,10 +221,15 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
 
     oldest=True walks the backlog forward from the earliest unposted entry —
     used while per-card images are still being generated oldest-first, so the
-    posts stay in step with what already has an image."""
+    posts stay in step with what already has an image.
+
+    kind ("card" | "graph", see docs/graph-posters.md) tracks its own posted/
+    pending set via _bk() — a card already posted as a card post is still
+    eligible for a graph post, and vice versa."""
     from _common import build_source  # local import keeps module load cheap
     if not tier.sources:
         return None
+    tkey = _bk(tier.id, kind)
     # in-flight (QUEUE'd, not yet terminal) items count as taken — re-posting
     # them is how duplicates happen once the workers recover.
     # Channel-aware 'done': a card is only finished when every channel we'd post
@@ -198,16 +237,17 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
     # eligible so the missing channel can be filled in later — it used to look
     # done and was stranded forever.
     done: set[str] = set()
-    for sid, chans in posted_log.published_channels(tier.id).items():
+    for sid, chans in posted_log.published_channels(tkey).items():
         if chans is None:            # pre-channel-tracking row → treat as handled
             done.add(sid); continue
         got = {ch for ch, st in chans.items() if st == 'PUBLISHED'}
         if not want_channels or want_channels <= got:
             done.add(sid)
-    posted = done | pending_ids_for(tier.id) | (exclude or set())
-    # A card tier must never surface an unrendered card: an `attach` channel
-    # would publish it imageless. Not optional — --ready-only only ADDS to this.
-    ready_only = ready_only or card_images.requires_render(tier)
+    posted = done | pending_ids_for(tkey) | (exclude or set())
+    # A card tier must never surface an item without the image its kind needs:
+    # an `attach` channel would publish it imageless. Not optional for
+    # kind="graph" — --ready-only only ADDS to this for kind="card".
+    ready_only = ready_only or _requires_ready(tier, kind)
     items: list[dict] = []
     ds = tier.sources[0]
     try:
@@ -219,8 +259,8 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
             sid = str(it.get("id") or it.get("catalyst_id")
                       or it.get("card_id") or it.get("_id") or "")
             if sid and sid not in posted:
-                if ready_only and not card_images.has_render(tier, sid):
-                    continue   # no card PNG yet — would post imageless
+                if ready_only and not _ready(tier, sid, kind):
+                    continue   # no image yet for this kind — would post imageless
                 # X-only run: skip cards below the conviction gate. A filter,
                 # not a quota — COUNT posts however many pass, maybe zero.
                 if want_channels == {"X"}:
@@ -376,9 +416,16 @@ def run_tier_batch(tier_id: str, *, count: int, delay: int, **kw) -> list[dict]:
 def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
              oldest: bool = False, channel: str | None = None,
              ready_only: bool = False,
-             exclude: set[str] | None = None) -> dict:
-    """Process ONE item for a tier. Returns a small summary dict. Never raises."""
-    result = {"tier": tier_id, "status": "skipped", "channels": [], "source_id": ""}
+             exclude: set[str] | None = None, kind: str = "card") -> dict:
+    """Process ONE item for a tier. Returns a small summary dict. Never raises.
+
+    kind ("card" | "graph", docs/graph-posters.md): "graph" composes and posts
+    the standalone entity-dependency-map post (recipe_graph + the graph PNG)
+    instead of the usual card post — tracked independently in posted_log/
+    content_cache via _bk() so the two never step on each other. Meant to run
+    on its OWN schedule (a separate cron entry with --kind graph), not mixed
+    into the same invocation as the card run."""
+    result = {"tier": tier_id, "status": "skipped", "channels": [], "source_id": "", "kind": kind}
     try:
         tier = load_tier(tier_id)
     except Exception as e:  # noqa: BLE001
@@ -386,8 +433,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         result["status"] = "error"
         return result
 
+    tkey = _bk(tier.id, kind)
     if push:
-        reconcile_pending(tier.id)   # settle in-flight posts BEFORE picking
+        reconcile_pending(tkey)   # settle in-flight posts BEFORE picking
 
     iids = integration_ids_for(tier)
     if channel:  # restrict to one channel (e.g. --channel linkedin)
@@ -400,15 +448,21 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         print(f"[{tier_id}] disabled (no channels) — skip")
         return result
 
+    iids = [i for i in iids if _kind_channel_enabled(tier, kind, channel_label(tier, i))]
+    if not iids:
+        print(f"[{tier_id}] {kind} disabled for every channel (GRAPH_POST_*_ENABLED) — skip")
+        result["status"] = "nothing-new"
+        return result
+
     want = {channel_label(tier, i) for i in iids}
     source_id = pick_unposted(tier, since, oldest=oldest, ready_only=ready_only,
-                              exclude=exclude, want_channels=want)
+                              exclude=exclude, want_channels=want, kind=kind)
     if not source_id:
         # Distinguish 'backlog empty' from 'every card filtered out because the
         # renders are unreachable' — otherwise a broken KG mount looks identical
         # to having nothing to post, and the daily job goes quiet for days.
-        if card_images.requires_render(tier) and not card_images.renders_available(tier):
-            print(f"[{tier_id}] NOTHING POSTABLE — card renders unreachable: "
+        if _requires_ready(tier, kind) and not card_images.renders_available(tier):
+            print(f"[{tier_id}] NOTHING POSTABLE — {kind} renders unreachable: "
                   f"{card_images.explain_missing(tier, '<any>')}", file=sys.stderr)
         print(f"[{tier_id}] nothing new since window — skip")
         result["status"] = "nothing-new"
@@ -416,10 +470,11 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
 
     result["source_id"] = source_id
 
-    # Belt-and-braces: refuse to compose a card tier post with no PNG, however
-    # the id was chosen. Composition is skipped entirely, not just the image.
-    if card_images.requires_render(tier) and not card_images.has_render(tier, source_id):
-        print(f"[{tier_id}] {source_id} SKIPPED — card image required but absent "
+    # Belt-and-braces: refuse to compose a post with no image for its kind,
+    # however the id was chosen. Composition is skipped entirely, not just
+    # the image.
+    if _requires_ready(tier, kind) and not _ready(tier, source_id, kind):
+        print(f"[{tier_id}] {source_id} SKIPPED — {kind} image required but absent "
               f"({card_images.explain_missing(tier, source_id)})")
         result["status"] = "nothing-new"
         return result
@@ -427,7 +482,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
     # Reuse staged content if we've already generated this post (preview or a
     # prior run) — so the push publishes exactly what was previewed and never
     # silently re-composes different text. --regenerate forces a fresh compose.
-    cached = None if regenerate else content_cache.load(tier.id, source_id)
+    cached = None if regenerate else content_cache.load(tkey, source_id)
     if cached:
         source_type = cached.get("source_type", "")
         text = cached["text"]
@@ -436,7 +491,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         staged = True
     else:
         try:
-            bundle = recipe_single(tier, source_id)
+            bundle = recipe_graph(tier, source_id) if kind == "graph" else recipe_single(tier, source_id)
         except Exception as e:  # noqa: BLE001
             print(f"[{tier_id}] compose failed for {source_id}: {e}", file=sys.stderr)
             result["status"] = "error"
@@ -444,8 +499,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         source_type = bundle.source_type
         text = bundle.text
         parts = bundle.parts if bundle.parts else split_for_thread(bundle.text)
-        media_paths = auto_media(tier, bundle, "single")
-        content_cache.save(tier.id, source_id, source_type=source_type, text=text,
+        media_paths = auto_media(tier, bundle, "single", kind=kind)
+        content_cache.save(tkey, source_id, source_type=source_type, text=text,
                            parts=parts, media_paths=[str(m) for m in media_paths])
         staged = False
 
@@ -460,7 +515,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         for i in iids:
             lbl = channel_label(tier, i)
             pol = tier.imagery_policy.get(lbl.lower(), "legacy")
-            note = (" → attaches the card image" if pol == "attach"
+            note = (f" → attaches the {kind} image" if pol == "attach"
                     else " → no media; platform renders the link card" if pol == "link_card"
                     else f" → {media_paths[0] if media_paths else 'no media'}")
             ch_parts, entities_cache = channel_parts(
@@ -491,7 +546,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
 
     any_published = any_stuck = any_throttled = False
     # channels this card already got — a retry must not double-post them
-    already_done = posted_log.published_channels_for(tier.id, source_id)
+    already_done = posted_log.published_channels_for(tkey, source_id)
     # Manual both-channels run: the picker only gates X-ONLY selection, so a
     # below-gate card picked for LinkedIn must still skip the X channel here.
     # Scheduled fires are per-channel and never reach this.
@@ -518,7 +573,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         # legacy: use whatever the single-decision ladder already produced.
         ch_media, attach_cache = channel_media(
             client, tier, label, source_type=source_type, source_id=source_id,
-            parts=parts, text=text, base_media=media, attach_cache=attach_cache)
+            parts=parts, text=text, base_media=media, attach_cache=attach_cache,
+            kind=kind)
         # Per-channel @handles (Figure → @figure on LinkedIn, @Figure_robots on X).
         ch_parts, entities_cache = channel_parts(
             tier, label, source_type=source_type, source_id=source_id,
@@ -567,7 +623,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             # composing a duplicate.
             if post_id:
                 posted_log.add_pending(
-                    tier=tier.id, source_id=source_id, source_type=source_type,
+                    tier=tkey, source_id=source_id, source_type=source_type,
                     post_id=post_id, channel=label, text=text, integration_ids=iids)
             queue_manual(tier, label, ch_parts, media_paths,
                          "Stuck in QUEUE — Temporal workers likely down. "
@@ -576,7 +632,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
 
     if any_published:  # posted → drop the one-shot image + the staged content JSON
         cleanup_attach(attach_cache)
-        content_cache.delete(tier.id, source_id)
+        content_cache.delete(tkey, source_id)
 
     # Mark handled ONLY if something actually reached a platform. Anything else
     # (all channels stuck, throttled, or rejected before Postiz accepted them)
@@ -587,7 +643,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
     # cards that never went anywhere and could never be retried.
     if any_published:
         mark_posted(source_type=source_type, source_id=source_id,
-                    tier=tier.id, mode="now", text=text,
+                    tier=tkey, mode="now", text=text,
                     integration_ids=iids,
                     postiz_post_id=",".join(c.get("url", "") for c in result["channels"]),
                     response={"channels": result["channels"]})
@@ -640,6 +696,13 @@ def main() -> int:
                    help="skip the pre-flight worker check/heal before publishing")
     p.add_argument("--check", action="store_true",
                    help="health check only (worker pollers + channels), no posting")
+    p.add_argument("--kind", choices=["card", "graph"], default="card",
+                   help="'card' (default): the usual catalyst-card post. "
+                        "'graph': the standalone entity-dependency-map post "
+                        "(docs/graph-posters.md) — a separate post, own image, "
+                        "own posted-log/content-cache tracking. Run this as a "
+                        "SECOND cron entry on its own schedule, never mixed "
+                        "into the same invocation as --kind card.")
     args = p.parse_args()
 
     load_dotenv()
@@ -701,21 +764,21 @@ def main() -> int:
                 t, watch_secs=watch_secs, poll=poll_secs, count=args.count,
                 delay=args.delay, push=args.push, since=since,
                 regenerate=args.regenerate, oldest=args.oldest,
-                channel=args.channel, ready_only=args.ready_only))
+                channel=args.channel, ready_only=args.ready_only, kind=args.kind))
     else:
         summaries = []
         for t in tiers:
             summaries.extend(run_tier_batch(
                 t, count=args.count, delay=args.delay, push=args.push, since=since,
                 regenerate=args.regenerate, oldest=args.oldest,
-                channel=args.channel, ready_only=args.ready_only))
+                channel=args.channel, ready_only=args.ready_only, kind=args.kind))
 
     print("\n==== summary ====")
     for s in summaries:
         chans = ", ".join(
             f"{c['channel']}:{c['state']}" for c in s["channels"]
         ) if s["channels"] else "-"
-        print(f"  {s['tier']:<20} {s['status']:<12} {chans}")
+        print(f"  {s['tier']:<20} [{s.get('kind', 'card')}] {s['status']:<12} {chans}")
     # Non-zero exit if anything needs a human (stuck) so cron logs flag it.
     return 1 if any(s["status"] == "stuck" for s in summaries) else 0
 

@@ -4,10 +4,10 @@
 # stuck-post safety net, so a non-zero heal isn't fatal.
 #
 # Called two ways:
-#   run-daily.sh                       -> all enabled channels, knobs from env/.env
-#   run-daily.sh CHANNEL COUNT DELAY TIER  -> one channel (the per-channel daily
-#                                             run; both the local crontab and the
-#                                             GCP trigger call it this way)
+#   run-daily.sh                             -> all enabled channels, knobs from env/.env
+#   run-daily.sh CHANNEL COUNT DELAY TIER KIND -> one channel (the per-channel
+#                                             daily run; both the local crontab
+#                                             and the GCP trigger call it this way)
 # Any positional arg may be '-' to fall through to the env/.env/default for it.
 #
 # Knob precedence: positional arg > real env var > .env > built-in default.
@@ -15,6 +15,9 @@
 #   DAILY_POST_DELAY   between cards   (default 90; accepts 90 / 60m / 2h)
 #   DAILY_POST_TIER    tier to post    (default arboryx.robotics; REQUIRED —
 #                                       `make post` has no "all tiers" mode)
+#   DAILY_POST_KIND    card | graph    (default card — the usual catalyst-card
+#                                       post; graph = standalone catalyst-graph
+#                                       post, docs/graph-posters.md)
 #
 # Cost note: X bills ~$0.20 per post, so COUNT is a money dial.
 # Set SCHEDULER_DRY_RUN=1 to print the resolved `make post` line and exit
@@ -27,6 +30,7 @@ ARG_CHANNEL="${1:-}"; [ "$ARG_CHANNEL" = "-" ] && ARG_CHANNEL=""
 ARG_COUNT="${2:-}";   [ "$ARG_COUNT"   = "-" ] && ARG_COUNT=""
 ARG_DELAY="${3:-}";   [ "$ARG_DELAY"   = "-" ] && ARG_DELAY=""
 ARG_TIER="${4:-}";    [ "$ARG_TIER"    = "-" ] && ARG_TIER=""
+ARG_KIND="${5:-}";    [ "$ARG_KIND"    = "-" ] && ARG_KIND=""
 
 # Read one var from .env without sourcing the whole file (values may hold
 # spaces/quotes/#, which `source` would mangle or execute).
@@ -61,21 +65,24 @@ else TIER="$(envget DAILY_POST_TIER)"
 fi
 [ -n "$TIER" ] || { echo "[error] no tier resolved — pass one as arg 4 or set DAILY_POST_TIER"; exit 2; }
 
+KIND="${ARG_KIND:-${DAILY_POST_KIND:-$(envget DAILY_POST_KIND)}}"; KIND="${KIND:-card}"
+case "$KIND" in card|graph) : ;; *) echo "[warn] KIND='$KIND' not card|graph — using card"; KIND=card;; esac
+
 case "$COUNT" in ''|*[!0-9]*) echo "[warn] COUNT='$COUNT' not a number — using 1"; COUNT=1;; esac
 case "$DELAY" in ''|*[!0-9smhd]*) echo "[warn] DELAY='$DELAY' not a duration — using 90"; DELAY=90;; esac
 
 # The daily run always drains the OLDEST ready-rendered backlog first.
-POST_ARGS=(READY=1 OLDEST=1 COUNT="$COUNT" DELAY="$DELAY")
+POST_ARGS=(READY=1 OLDEST=1 COUNT="$COUNT" DELAY="$DELAY" KIND="$KIND")
 [ -n "$CHANNEL" ] && POST_ARGS+=(CHANNEL="$CHANNEL")
 [ -n "$TIER" ]    && POST_ARGS+=(TIER="$TIER")
 
 if [ "${SCHEDULER_DRY_RUN:-}" = "1" ]; then
-  echo "[dry-run] channel=${CHANNEL:-<all enabled>} count=$COUNT delay=$DELAY tier=${TIER}"
+  echo "[dry-run] channel=${CHANNEL:-<all enabled>} count=$COUNT delay=$DELAY tier=${TIER} kind=${KIND}"
   echo "[dry-run] make post ${POST_ARGS[*]}"
   exit 0
 fi
 
-echo "===== daily run $(date -u +%FT%TZ)  channel=${CHANNEL:-<all>} tier=${TIER} ====="
+echo "===== daily run $(date -u +%FT%TZ)  channel=${CHANNEL:-<all>} tier=${TIER} kind=${KIND} ====="
 case "${CHANNEL:-all}" in
   linkedin) COSTNOTE="(LinkedIn — free)" ;;
   *)        COSTNOTE="(~\$$(awk "BEGIN{printf \"%.2f\", $COUNT*0.20}") on X)" ;;

@@ -44,6 +44,7 @@ from urllib.parse import urlparse
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+from . import card_images
 from .card_to_graph import card_to_graph_spec
 from .config_loader import Tier
 from .funnel import let_platform_render_link_card
@@ -76,18 +77,28 @@ OWN_DOMAINS = {"arboryx.ai", "robotics.arboryx.ai"}
 
 
 def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
-               *, force_attach: bool = False) -> list[Path]:
+               *, force_attach: bool = False, kind: str = "card") -> list[Path]:
     """Pick imagery for a bundle. Returns [] if no good option.
 
     force_attach=True is used by the per-channel policy (e.g. LinkedIn 'attach'):
     it skips the link-card decision and, for a card-anchored post, prefers the
     destination's server-rendered og:image (the per-card PNG) over the entity
-    graph — the same image the link card would show, downloaded and attached."""
+    graph — the same image the link card would show, downloaded and attached.
+
+    kind="graph" (docs/graph-posters.md) is a STANDALONE post about the entity
+    dependency map — never the card image, never a fallback branded card. It
+    short-circuits the whole ladder: no graph rendered yet -> no image -> the
+    caller (bin/daily.py --kind graph) skips the post, same fail-closed
+    contract as a card tier requires_render()."""
     # 1. Explicit media wins
     if bundle.media_paths:
         return bundle.media_paths
 
     ctx = bundle.context or {}
+
+    if kind == "graph":
+        graph = _og_graph_image(tier, bundle.source_id, ctx)
+        return [graph] if graph else []
 
     # 1b. Simmer (Facades): the per-product Cloud Run screenshot service is the
     #     ONLY image source for a simmer_api post. It either snaps the live board
@@ -284,6 +295,42 @@ def _og_card_image(ctx: dict) -> Path | None:
         out.write_bytes(data)
         return out
     except Exception:  # noqa: BLE001 — degrade to the next ladder step / link card
+        return None
+
+
+def _og_graph_image(tier: Tier, card_id: str, ctx: dict) -> Path | None:
+    """Download the entity-subgraph PNG for this card (docs/graph-posters.md) —
+    the second image attached alongside the card on channels whose
+    GRAPH_IMAGE_POLICY is "second_image". None if the graph isn't rendered yet
+    (fail closed, same contract as card_images.has_graph — never an error) or
+    if the card is too sparse to draw a useful graph (<3 entities, per the
+    doc's recommended floor)."""
+    card = ctx.get("card")
+    if isinstance(card, dict) and len(card.get("entities") or []) < 3:
+        return None
+    if not card_images.has_graph(tier, card_id):
+        return None
+    template = tier.raw.get("KG_GRAPH_URL_TEMPLATE", "").strip()
+    if not template:
+        return None
+    try:
+        url = template.format(card_id=card_id)
+    except (KeyError, IndexError):
+        return None
+    out = CACHE_DIR / f"graph_og_{_hash(url)}.png"
+    if out.exists() and out.stat().st_size > 1000:
+        return out
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "arboryx-daily/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read()
+        if not (data[:8].startswith(b"\x89PNG") or data[:2] == b"\xff\xd8"):
+            return None  # not a real image (e.g. a "not found" html body)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        return out
+    except Exception:  # noqa: BLE001 — degrade to card-only attach
         return None
 
 
