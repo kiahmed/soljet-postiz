@@ -185,6 +185,18 @@ def _requires_ready(tier: Tier, kind: str) -> bool:
     return True if kind == "graph" else card_images.requires_render(tier)
 
 
+def _kind_channel_enabled(tier: Tier, kind: str, label: str) -> bool:
+    """Per-kind, per-channel kill switch (docs/graph-posters.md), e.g.
+    GRAPH_POST_X_ENABLED="false" turns X off for kind="graph" ONLY — that
+    channel's card-post schedule is untouched, and no live GCP Cloud
+    Scheduler job needs to change to flip this. Card kind is never gated
+    here (unchanged, pre-existing behavior)."""
+    if kind == "card":
+        return True
+    key = f"{kind.upper()}_POST_{label.upper()}_ENABLED"
+    return str(tier.raw.get(key, "true")).strip().lower() != "false"
+
+
 def _x_min_confidence(tier) -> float:
     """X_MIN_CONFIDENCE from tier.config ('' = gate off). X posts cost real
     money and land on a curated channel; LinkedIn takes everything."""
@@ -434,6 +446,12 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             return result
     if not iids:
         print(f"[{tier_id}] disabled (no channels) — skip")
+        return result
+
+    iids = [i for i in iids if _kind_channel_enabled(tier, kind, channel_label(tier, i))]
+    if not iids:
+        print(f"[{tier_id}] {kind} disabled for every channel (GRAPH_POST_*_ENABLED) — skip")
+        result["status"] = "nothing-new"
         return result
 
     want = {channel_label(tier, i) for i in iids}
