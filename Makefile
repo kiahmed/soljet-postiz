@@ -14,7 +14,7 @@
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
 KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS \
-              KEEP MODE EVENT PART SUB
+              KEEP MODE EVENT PART SUB KIND
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -101,15 +101,18 @@ check:          ## Daily poster's view: worker pollers + each tier's channels
 #   OLDEST=1               oldest unposted entry instead of newest
 #   CHANNEL=linkedin|x     one channel only (default: all the tier's channels)
 #   TIER=arboryx.robotics  REQUIRED — the one tier to operate on
-_POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only)$(if $(WATCH), --watch $(WATCH))$(if $(POLL), --poll $(POLL)) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER))
+#   KIND=card|graph        'card' (default) or the standalone catalyst-graph
+#                          post (docs/graph-posters.md) — run this on its OWN
+#                          schedule, not mixed into the same fire as KIND=card
+_POSTOPTS = $(if $(OLDEST),--oldest)$(if $(COUNT), --count $(COUNT))$(if $(DELAY), --delay $(DELAY))$(if $(READY), --ready-only)$(if $(WATCH), --watch $(WATCH))$(if $(POLL), --poll $(POLL)) $(if $(CHANNEL),--channel $(CHANNEL)) $(if $(TIER),--tier $(TIER)) $(if $(KIND), --kind $(KIND))
 
-post-preview:   ## Compose posts, DO NOT publish — TIER= required [OLDEST=1] [CHANNEL=]
+post-preview:   ## Compose posts, DO NOT publish — TIER= required [OLDEST=1] [CHANNEL=] [KIND=card|graph]
 	$(PYTHON) bin/daily.py $(_POSTOPTS)
 
-regenerate:     ## Re-compose + re-stage (discard staged), no publish — TIER= required [OLDEST=1] [CHANNEL=]
+regenerate:     ## Re-compose + re-stage (discard staged), no publish — TIER= required [OLDEST=1] [CHANNEL=] [KIND=card|graph]
 	$(PYTHON) bin/daily.py --regenerate $(_POSTOPTS)
 
-post:           ## Publish posts — TIER= required [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=]
+post:           ## Publish posts — TIER= required [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=] [KIND=card|graph]
 	$(PYTHON) bin/daily.py --push $(_POSTOPTS)
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
