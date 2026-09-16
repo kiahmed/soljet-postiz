@@ -77,7 +77,7 @@ OWN_DOMAINS = {"arboryx.ai", "robotics.arboryx.ai"}
 
 
 def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
-               *, force_attach: bool = False, channel_label: str | None = None) -> list[Path]:
+               *, force_attach: bool = False, kind: str = "card") -> list[Path]:
     """Pick imagery for a bundle. Returns [] if no good option.
 
     force_attach=True is used by the per-channel policy (e.g. LinkedIn 'attach'):
@@ -85,14 +85,20 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
     destination's server-rendered og:image (the per-card PNG) over the entity
     graph — the same image the link card would show, downloaded and attached.
 
-    channel_label (e.g. "LinkedIn", "X") gates the second catalyst-graph image
-    (docs/graph-posters.md) per GRAPH_IMAGE_POLICY_<CHANNEL> — only meaningful
-    together with force_attach, since the graph rides alongside the card image."""
+    kind="graph" (docs/graph-posters.md) is a STANDALONE post about the entity
+    dependency map — never the card image, never a fallback branded card. It
+    short-circuits the whole ladder: no graph rendered yet -> no image -> the
+    caller (bin/daily.py --kind graph) skips the post, same fail-closed
+    contract as a card tier requires_render()."""
     # 1. Explicit media wins
     if bundle.media_paths:
         return bundle.media_paths
 
     ctx = bundle.context or {}
+
+    if kind == "graph":
+        graph = _og_graph_image(tier, bundle.source_id, ctx)
+        return [graph] if graph else []
 
     # 1b. Simmer (Facades): the per-product Cloud Run screenshot service is the
     #     ONLY image source for a simmer_api post. It either snaps the live board
@@ -121,14 +127,7 @@ def auto_media(tier: Tier, bundle: PostBundle, recipe_name: str,
     if force_attach and ctx.get("deep_link"):
         og = _og_card_image(ctx)
         if og:
-            images = [og]
-            if channel_label is not None:
-                policy = tier.graph_image_policy.get(channel_label.lower(), "none")
-                if policy == "second_image":
-                    graph = _og_graph_image(tier, bundle.source_id, ctx)
-                    if graph:
-                        images.append(graph)
-            return images
+            return [og]
 
     # Optional LLM router — reorders strategies, doesn't bypass user media
     forced_strategy = _llm_pick_strategy(bundle, recipe_name) if _llm_router_on() else None

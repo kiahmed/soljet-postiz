@@ -13,6 +13,7 @@ import os
 import re
 from datetime import datetime, timezone
 
+from .card_to_graph import card_to_graph_spec
 from .config_loader import Tier, context_chain
 from .llm import chat as llm_chat
 
@@ -394,6 +395,57 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
 
     text, hook = _temporal_frame(
         text, catalyst.get("date"), card=catalyst,
+        source_id=str(catalyst.get("card_id") or catalyst.get("id") or ""))
+    body = _append_hashtags(text, tags, max_chars)
+    return f"{body}\n\n{hook}"
+
+
+_SENTIMENT_WORD = {"+": "tailwind", "-": "headwind", "?": "signal to watch"}
+
+
+def compose_graph(tier: Tier, catalyst: dict, related: list[dict], *, max_chars: int = 500) -> str:
+    """Standalone catalyst-GRAPH post — the entity dependency map, as its own
+    post on its own schedule (docs/graph-posters.md), not a second image
+    bundled into compose_catalyst's post.
+
+    DETERMINISTIC, no LLM — same reasoning as compose_catalyst: an LLM asked
+    to narrate "future outlook" from a card would be asked to speculate past
+    what the data supports, which is exactly the fabrication risk
+    compose_catalyst was written to avoid. Instead this reuses
+    card_to_graph_spec — the IDENTICAL structured read of `relationships` that
+    draws the attached graph image — so the text and the picture never
+    disagree, and every claim traces to a `rel` in the card's own data."""
+    sector = _sector_for(tier, catalyst)
+    spec = card_to_graph_spec(catalyst, sector=sector)
+    if not spec or not (spec.direct or spec.indirect):
+        # Card has a rendered graph PNG but not enough structure to narrate
+        # (shouldn't happen if the caller gated on has_graph(), but never
+        # assume) — fall back to the card's own text so the post isn't empty.
+        return compose_catalyst(tier, catalyst, related, max_chars=max_chars)
+
+    lines = [f"The dependency map behind {spec.primary}"
+             f"{f' — {spec.event}' if spec.event else ''}:"]
+    for node in spec.direct:
+        tag = f" ({node.note})" if node.note else ""
+        lines.append(f"→ {node.name}{tag} — {_SENTIMENT_WORD.get(node.sentiment, 'signal to watch')}")
+    for node in spec.indirect:
+        lines.append(f"↳ {node.name} — second-order")
+
+    scored = spec.direct or spec.indirect
+    sentiments = [n.sentiment for n in scored]
+    pos, neg = sentiments.count("+"), sentiments.count("-")
+    if pos > neg:
+        outlook = "Net tailwind — more of the map benefits than not."
+    elif neg > pos:
+        outlook = "Net headwind — pressure outweighs the upside here."
+    else:
+        outlook = "Mixed signal — impact splits across the map."
+    lines.append(f"\n{outlook}")
+    draft = "\n".join(lines)
+
+    tags = _relevant_hashtags(sector, primary_entities(catalyst))
+    text, hook = _temporal_frame(
+        draft, catalyst.get("date"), card=catalyst,
         source_id=str(catalyst.get("card_id") or catalyst.get("id") or ""))
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"

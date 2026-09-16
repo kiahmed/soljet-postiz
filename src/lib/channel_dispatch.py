@@ -48,7 +48,7 @@ def deep_link_from_text(text: str) -> str | None:
 
 
 def attach_media(client, tier, source_type: str, source_id: str,
-                 parts: list[str], text: str, *, label: str | None = None
+                 parts: list[str], text: str, *, kind: str = "card"
                  ) -> tuple[list[dict], list[Path]]:
     """Media for an 'attach' channel (e.g. LinkedIn): run the imagery ladder in
     force-attach mode — prefers the destination's per-card og:image PNG, falling
@@ -56,9 +56,8 @@ def attach_media(client, tier, source_type: str, source_id: str,
     paths); the caller deletes the local paths after a successful post. ([], [])
     if nothing resolves (caller degrades to link_card). Never raises.
 
-    `label` (channel name) gates the second catalyst-graph image per
-    GRAPH_IMAGE_POLICY_<CHANNEL> (docs/graph-posters.md) — passed through to
-    auto_media so e.g. LinkedIn can get [card, graph] while X gets [card]."""
+    kind="graph" (docs/graph-posters.md) routes to the standalone catalyst-graph
+    image instead of the card — see imagery.auto_media."""
     ctx: dict = {}
     dl = deep_link_from_text(text)
     if dl:
@@ -71,7 +70,7 @@ def attach_media(client, tier, source_type: str, source_id: str,
     bundle = PostBundle(text=text, source_type=source_type, source_id=source_id,
                         parts=parts, context=ctx)
     try:
-        paths = auto_media(tier, bundle, "single", force_attach=True, channel_label=label)
+        paths = auto_media(tier, bundle, "single", force_attach=True, kind=kind)
     except Exception:  # noqa: BLE001
         return [], []
     out, locals_ = [], []
@@ -88,14 +87,14 @@ def attach_media(client, tier, source_type: str, source_id: str,
 
 def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
                   parts: list[str], text: str, base_media: list[dict],
-                  attach_cache):
+                  attach_cache, kind: str = "card"):
     """Resolve the media list for ONE channel per its imagery policy.
 
-    Returns (media_list, attach_cache). attach_cache (a dict keyed by lowercased
-    channel label, each value {media, paths}) memoizes uploads per channel —
-    pass it back in. Keyed per-channel (not shared) because GRAPH_IMAGE_POLICY
-    can differ between 'attach' channels (e.g. LinkedIn gets [card, graph], X
-    gets [card] only) — see docs/graph-posters.md.
+    Returns (media_list, attach_cache). attach_cache (a dict {media, paths})
+    memoizes the upload across channels — pass it back in. Shared across
+    channels because the resolved image never depends on WHICH channel is
+    asking, only on `kind` (card vs. graph — docs/graph-posters.md), and a run
+    only ever processes one kind at a time.
     `cleanup_attach(attach_cache)` deletes the downloaded local files after a
     successful post.
     """
@@ -105,13 +104,11 @@ def channel_media(client, tier, label: str, *, source_type: str, source_id: str,
     if policy == "link_card":
         return [], attach_cache
     if policy == "attach":
-        attach_cache = attach_cache or {}
-        key = label.lower()
-        if key not in attach_cache:
+        if attach_cache is None:
             media, locals_ = attach_media(client, tier, source_type, source_id,
-                                          parts, text, label=label)
-            attach_cache[key] = {"media": media, "paths": locals_}
-        return (attach_cache[key].get("media") or []), attach_cache
+                                          parts, text, kind=kind)
+            attach_cache = {"media": media, "paths": locals_}
+        return (attach_cache.get("media") or []), attach_cache
     return base_media, attach_cache  # legacy single-decision behavior
 
 
@@ -119,14 +116,11 @@ def cleanup_attach(attach_cache) -> None:
     """Delete the local attach images downloaded for this post (call after a
     successful publish so data/imagery_cache doesn't accumulate one-shot PNGs)."""
     if isinstance(attach_cache, dict):
-        for entry in attach_cache.values():
-            if not isinstance(entry, dict):
-                continue
-            for p in entry.get("paths") or []:
-                try:
-                    Path(p).unlink(missing_ok=True)
-                except Exception:  # noqa: BLE001
-                    pass
+        for p in attach_cache.get("paths") or []:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def tier_has_channel_policy(tier) -> bool:

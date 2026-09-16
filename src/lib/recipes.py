@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .composer import _llm_rewrite, _read_context, compose_catalyst, compose_finding
+from .composer import _llm_rewrite, _read_context, compose_catalyst, compose_finding, compose_graph
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -138,6 +138,52 @@ def recipe_single(tier: Tier, source_id: str) -> PostBundle:
             context=ctx,
         )
     raise KeyError(f"source-id '{source_id}' not found in tier '{tier.id}'")
+
+
+# ---------- Catalyst graph — standalone post, own schedule (docs/graph-posters.md) ----------
+
+# Richer than the 280-char card-post budget — the dependency-map narrative
+# needs room for several entities; split_for_thread turns any overflow into
+# an X thread automatically, same as any other over-length post.
+GRAPH_POST_CHAR_BUDGET = 500
+
+
+def recipe_graph(tier: Tier, source_id: str) -> PostBundle:
+    """One catalyst-graph post: the entity dependency map for a card, as its
+    OWN post — not a second image bundled into recipe_single's card post.
+    Caller (bin/daily.py --kind graph) gates on card_images.has_graph()
+    before calling this, same fail-closed contract as the card recipe."""
+    for ds in tier.sources:
+        if ds.type not in ("cards_json", "firestore_cards"):
+            continue
+        try:
+            src = build_source(ds, tier)
+            item = src.get(source_id)
+        except (KeyError, ValueError):
+            continue
+        related = src.get_related(source_id)
+        link = deep_link_for(tier, "cards_json", item) or ""
+        budget = _budget_for_link(link, total=GRAPH_POST_CHAR_BUDGET)
+        ctx = {
+            "source_url": "",
+            "sector": tier.raw.get("SECTORS", "").split(",")[0].strip()
+                      or item.get("sector") or "",
+            "title": (item.get("headline") or "")[:120],
+            "subtitle": item.get("subtitle") or "",
+            "card": item,  # full card dict — imagery layer resolves the graph PNG from it
+        }
+        if link:
+            ctx["deep_link"] = link
+        text = compose_graph(tier, item, related, max_chars=budget)
+        text = append_link_to_text(text, link)
+        return PostBundle(
+            text=text,
+            source_type=ds.type,   # "cards_json" or "firestore_cards"
+            source_id=source_id,
+            context=ctx,
+        )
+    raise KeyError(f"source-id '{source_id}' not found in tier '{tier.id}' "
+                   f"(no cards_json/firestore_cards source configured)")
 
 
 # ---------- Simmer (Facades) — event-driven, deterministic templating ----------
