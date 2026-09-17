@@ -303,7 +303,7 @@ def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
         if not resp.received_messages:
             break
 
-        ack, nack = [], []
+        ack = []
         for rm in resp.received_messages:
             env = {"message": {"data": base64.b64encode(rm.message.data).decode(),
                                "attributes": dict(rm.message.attributes),
@@ -311,16 +311,15 @@ def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
             r = process_event(env, tier=tier, dedupe=dedupe, mode=mode, dry_run=dry_run)
             _log("processed", **r)
             got += 1
+            # Always ack, even on error — same "never retry a business-logic
+            # failure" rule as the push handler (build_app). `errors` is
+            # still counted for the exit code, it just no longer triggers a
+            # redelivery.
             if r.get("status") == "error":
                 errors += 1
-                nack.append(rm.ack_id)
-            else:
-                ack.append(rm.ack_id)
+            ack.append(rm.ack_id)
         if ack:
             client.acknowledge(request={"subscription": path, "ack_ids": ack})
-        if nack:                     # 0s deadline => immediate redelivery
-            client.modify_ack_deadline(request={"subscription": path,
-                                                "ack_ids": nack, "ack_deadline_seconds": 0})
 
     _log("pull_done", processed=got, errors=errors)
     return 1 if errors else 0
@@ -329,7 +328,7 @@ def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
 def build_app(tier, dedupe, *, mode, dry_run):
     """The Flask app for Pub/Sub PUSH delivery. Used by gunicorn (create_app,
     the Cloud Run entrypoint) and by `--serve` (local)."""
-    from flask import Flask, jsonify, request
+    from flask import Flask, request
     app = Flask(__name__)
 
     @app.get("/healthz")
@@ -338,12 +337,21 @@ def build_app(tier, dedupe, *, mode, dry_run):
 
     @app.post("/")
     def push():  # noqa: ANN202
-        r = process_event(request.get_json(force=True, silent=True) or {},
-                          tier=tier, dedupe=dedupe, mode=mode, dry_run=dry_run)
-        _log("processed", **r)
-        # 2xx = ack the message; a transient error should 5xx so Pub/Sub retries.
-        code = 500 if r.get("status") == "error" else 204
-        return (jsonify(r), 200) if code == 200 else ("", code)
+        # ALWAYS ack (204) — never ask Pub/Sub to retry. Once a message
+        # reaches this poster, the outcome (posted, skipped, or a genuine
+        # posting failure like a platform quota) is final; a retry doesn't
+        # help a provider-side rejection ("credits depleted" isn't fixed by
+        # trying again in 10s) and previously just multiplied duplicate
+        # ERROR posts in Postiz every redelivery. Log it once and move on —
+        # a real fix (top up the quota, patch a bug) means re-firing the
+        # event by hand, not an automatic retry storm.
+        try:
+            r = process_event(request.get_json(force=True, silent=True) or {},
+                              tier=tier, dedupe=dedupe, mode=mode, dry_run=dry_run)
+            _log("processed", **r)
+        except Exception as e:  # noqa: BLE001 — a crash here must still ack
+            _log("push_handler_crash", error=str(e)[:400])
+        return "", 204
 
     return app
 

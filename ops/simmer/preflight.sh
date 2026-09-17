@@ -99,6 +99,11 @@ if gcq pubsub subscriptions describe "$SUB" --format='value(name)' >/dev/null; t
   filt="$(gcq pubsub subscriptions describe "$SUB" --format='value(filter)' | tr -d ' ')"
   [ "$filt" = "attributes.product=\"${PRODUCT}\"" ] && ok "subscription $SUB" "push, filtered on product" \
     || warn "subscription $SUB" "filter is '${filt:-<none>}', expected attributes.product=\"${PRODUCT}\""
+  dlq="$(gcq pubsub subscriptions describe "$SUB" --format='value(deadLetterPolicy.deadLetterTopic)')"
+  # Not the primary defense (the poster always acks — see build_app) — this
+  # only catches a crash severe enough Cloud Run never responds at all.
+  [ -n "$dlq" ] && ok "  └ dead-letter policy" "-> ${dlq##*/}" \
+    || warn "  └ dead-letter policy" "not set — make ${PRODUCT}-deploy PART=--pubsub-only"
 else
   warn "subscription $SUB" "not created yet — make ${PRODUCT}-deploy PART=--pubsub-only (needs the poster service first)"
 fi

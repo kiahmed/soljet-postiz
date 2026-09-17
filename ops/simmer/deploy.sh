@@ -199,6 +199,32 @@ deploy_poster(){
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/run.invoker"
 }
 
+# Dead-letter backstop. NOT the primary defense — the poster's push handler
+# always acks (204), even on a genuine posting failure (e.g. a platform quota
+# like "credits depleted"), specifically so a business-logic failure is
+# logged ONCE and never retried (retrying doesn't fix a provider-side
+# rejection, it just multiplies duplicate ERROR posts — see bin/simmer_poster
+# .py::build_app). This only catches the residual case the poster's own
+# try/except can't: a crash severe enough that Cloud Run never returns ANY
+# response (OOM kill mid-request, say) — GCP's minimum is 5 delivery
+# attempts, so that's the floor here, not a deliberate retry policy.
+ensure_dlq(){
+  local dlq_topic="${SUB}-dlq" dlq_sub="${SUB}-dlq-sub" proj_num pubsub_sa
+  echo "== Pub/Sub dead-letter: $dlq_topic =="
+  gc pubsub topics create "$dlq_topic" 2>/dev/null || echo "   (exists)"
+  # Pull sub purely so a dead-lettered message is inspectable, not silently
+  # discarded — should be rare to ever see anything land here at all.
+  gc pubsub subscriptions create "$dlq_sub" --topic="$dlq_topic" \
+    --ack-deadline=60 --message-retention-duration=7d 2>/dev/null || echo "   (exists)"
+  proj_num="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+  pubsub_sa="service-${proj_num}@gcp-sa-pubsub.iam.gserviceaccount.com"
+  # Required for Pub/Sub to dead-letter on our behalf:
+  gc pubsub topics add-iam-policy-binding "$dlq_topic" \
+    --member="serviceAccount:${pubsub_sa}" --role="roles/pubsub.publisher"
+  gc pubsub subscriptions add-iam-policy-binding "$SUB" \
+    --member="serviceAccount:${pubsub_sa}" --role="roles/pubsub.subscriber"
+}
+
 deploy_pubsub(){
   echo "== Pub/Sub subscription: $SUB =="
   ensure_topic
@@ -217,6 +243,9 @@ deploy_pubsub(){
   # subscriber role, scoped to this subscription:
   gc pubsub subscriptions add-iam-policy-binding "$SUB" \
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/pubsub.subscriber"
+  ensure_dlq
+  gc pubsub subscriptions update "$SUB" \
+    --dead-letter-topic="${SUB}-dlq" --max-delivery-attempts=5
 }
 
 # PULL subscription on the shared topic — for validating against real EdgeLane

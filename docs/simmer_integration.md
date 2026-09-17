@@ -142,6 +142,26 @@ Torque" below). Provisioning from **either** side must be safe to re-run:
   already exists, **ensure the role binding and move on** — don't recreate.
   Whichever repo runs first creates the resource; the other just binds to it.
 
+## Delivery & error handling — no retries, ever
+
+`bin/simmer_poster.py`'s push handler **always acks (204)**, whatever
+`process_event` returns — posted, skipped, duplicate, or a genuine posting
+failure. It never returns 500 to make Pub/Sub retry. This was a deliberate
+change after a real incident (2026-09-16): X's media-upload API started
+returning `402 "credits depleted"` for the Matrix X channel, and because the
+poster used to 500 on any error, Pub/Sub redelivered the same failing event
+indefinitely — 87 duplicate `ERROR` posts piled up in Postiz before it was
+noticed. A provider-side rejection like that isn't fixed by retrying 10s
+later; it just multiplies the mess. Now: **log once, don't retry** — a
+genuine failure needs a human to fix the underlying cause (top up a quota,
+patch a bug) and re-fire the event by hand, not an automatic loop.
+
+A dead-letter topic (`<sub>-dlq`, `ops/simmer/deploy.sh::ensure_dlq`, wired
+via `--pubsub-only`) is a backstop, not the primary defense — it only
+catches the residual case the poster's own try/except can't: a crash severe
+enough Cloud Run never returns any response at all. GCP's minimum
+`max-delivery-attempts` is 5, so that's the floor, not a chosen retry count.
+
 ## Deploy / update on GCP
 
 ```bash

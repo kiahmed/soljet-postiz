@@ -209,6 +209,23 @@ in `src/lib/recipes.py` would need one template per state, e.g.:
 Never more than the post moments in the table above — no filler post to hit a
 cadence target.
 
+## Delivery & error handling — no retries, ever
+
+`bin/matrix_poster.py`'s push handler **always acks (204)**, whatever
+`process_event` returns — posted, skipped, duplicate, or a genuine posting
+failure. It never returns 500 to make Pub/Sub retry. Same rationale as
+Simmer's (both were fixed together after the same 2026-09-16 incident): a
+provider-side rejection like X's `402 "credits depleted"` isn't fixed by
+retrying 10s later, and the old 500-on-error behavior turned one real
+failure into 87 duplicate `ERROR` posts via automatic redelivery. **Log
+once, don't retry** — a fix means a human re-firing the event, not a loop.
+
+A dead-letter topic (`<sub>-dlq`, `ops/matrix/deploy.sh::ensure_dlq`, wired
+via `--pubsub-only`) is a backstop, not the primary defense — it only
+catches the residual case the poster's own try/except can't: a crash severe
+enough Cloud Run never returns any response at all. GCP's minimum
+`max-delivery-attempts` is 5, so that's the floor, not a chosen retry count.
+
 ## GCP plan (dependencies, component by component)
 
 **What's shared with Simmer, and what deliberately is not:** the two service
