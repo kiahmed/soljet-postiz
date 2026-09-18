@@ -136,7 +136,15 @@ class MatrixAPI(Source):
             except Exception:  # noqa: BLE001
                 card[block] = {}
         trust = (card.get("bias") or {}).get("trust") or {}
-        card["hint_text"] = trust.get("hint_text")
+        # EdgeLane's `hint_text` is a fixed string ("Bias re-syncing...") that
+        # comes back non-empty on EVERY response, in_sync or not — `show_hint`
+        # (state != "in_sync") is the actual signal for whether it should be
+        # shown (accuracy.py's own frontend contract). Without this check, a
+        # healthy, in-sync pick still gets the "still re-syncing" disclaimer
+        # glued onto it — see the 2026-09-18 incident: a HEALTHY/tradeable
+        # Iron Condor pick_selected post still carried the line because this
+        # ignored show_hint and took hint_text at face value.
+        card["hint_text"] = trust.get("hint_text") if trust.get("show_hint") else None
         card["bias_trust_state"] = trust.get("state")
         card["win_rate"] = trust.get("win_rate")
         card["graded"] = trust.get("graded")
