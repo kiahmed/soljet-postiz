@@ -228,7 +228,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
     # Per-state min-gap safety net — insurance, not the primary gate (see
     # Dedupe.last_state_time's docstring). Only states with
     # MATRIX_MIN_GAP_HOURS_<STATE> set in the tier config are floored;
-    # reactive states (pick_selected, bias_*, win_rate_notable) have none.
+    # most reactive states (bias_*, win_rate_notable) have none.
+    # pick_selected got one 2026-09-17 (see matrix_tier.config) after a
+    # flapping BROKEN pick flooded LinkedIn with near-duplicate posts.
     gap_key = f"MATRIX_MIN_GAP_HOURS_{state.upper()}"
     try:
         gap_hours = float(tier.raw.get(gap_key) or 0)
