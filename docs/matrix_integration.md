@@ -118,7 +118,7 @@ by the `view` param, in `matrix-snap`'s own `main.py` — a fork of
 
 | state (`POST_ON_STATES`) | trigger | who decides it's worth posting | crop | cadence |
 |---|---|---|---|---|
-| `pick_selected` | engine's top strategy pick changes | **engine** — only fires on a real change, not every re-score | `engine_pick` | reactive, no cap needed (picks don't change that often) |
+| `pick_selected` | engine's top strategy pick changes | **engine** — only fires on a real change, not every re-score | `engine_pick` | reactive; `MATRIX_MIN_GAP_HOURS_PICK_SELECTED` floor added 2026-09-17 as a backstop (see §Gating incident note) |
 | `bias_aligned` / `bias_diverged` | `accuracy.py`'s bias-trust `state` transitions (e.g. `in_sync` ↔ `paused`/`low_conf`) | **engine** — only when the relationship itself changed | `bias_chip` | reactive, optional |
 | `win_rate_notable` | a recovery pattern (loss streak → win) or a high-win-frequency stretch on the eval grid — **not a daily obligation** | **engine only** — the poster has no way to know a pick is "winning"; see §Gating and `matrix_events_update.md` for the exact rule | `win_eval_grid` | reactive, optional, no cadence floor or ceiling — fires only when the pattern matches |
 | `session_open` | start of trading day | **engine** — skip silently if there's nothing worth a walls-chip that day | `walls_chip` | at most 1/day |
@@ -170,15 +170,43 @@ own posture — log and swallow, never raise) so a transient publish failure
 can never stall grading. Full rule detail: `matrix_events_update.md`.
 
 **Shipped**: a per-state minimum gap (`MATRIX_MIN_GAP_HOURS_<STATE>` in
-`matrix_tier.config` — `SESSION_OPEN`/`GRID_DIGEST`/`DAILY_RECAP` only;
-reactive states have no floor since they already only fire on a real
-transition) is a safety net, not a substitute for engine judgment, so a bug
-in the engine's significance logic can't turn into a wall of posts. Enforced
-in `bin/matrix_poster.py::process_event()` via `Dedupe.last_state_time()` /
+`matrix_tier.config` — `SESSION_OPEN`/`GRID_DIGEST`/`DAILY_RECAP`, plus
+`PICK_SELECTED` as of 2026-09-17; the other reactive states still have no
+floor since they already only fire on a real transition) is a safety net,
+not a substitute for engine judgment, so a bug in the engine's significance
+logic can't turn into a wall of posts. Enforced in
+`bin/matrix_poster.py::process_event()` via `Dedupe.last_state_time()` /
 `mark_state_time()` — same relationship `POST_ON_STATES` already has to the
 engine's own `state` choice: insurance, not the primary gate. A state that's
 gapped out is `status: "skipped"`, acked (204) like any other skip — Pub/Sub
-doesn't hold or retry it.
+doesn't hold or retry it. Note this floor is global across symbols (keyed
+`__gap__:<state>`, not `__gap__:<state>:<symbol>`), same as the other three —
+fine while Matrix only covers SPX/NDX, worth revisiting if a third symbol
+is added.
+
+**2026-09-17 incident**: `pick_selected` had no floor because the theory was
+"picks don't change that often" — true for a healthy pick, false for a
+flapping one. EdgeLane's `_pick_key` (`matrix_signals.py`) keys a pick's
+identity on its legs/strikes, deliberately excluding composite score so a
+score drift alone isn't a "new pick." But when SPX sat in a losing/`BROKEN`
+structure with bias diverged, the engine kept re-striking a Bear Put every
+poll — different legs each time, so each one *did* legally count as a new
+pick under `_pick_key`, firing `pick_selected` repeatedly with only the
+composite score changing (61.3, then 59.0) and the same "edge assumption
+didn't hold up / Bias re-syncing" copy both times.
+
+**Policy decision (2026-09-17): `pick_selected` is not a signal feed.** These
+posts exist to show the tool is sharp, not to broadcast every trade idea —
+so a couple a day is the target, and a BROKEN/diverged pick shouldn't post
+*at all*, not even once per divergence episode. `MATRIX_MIN_GAP_HOURS_PICK_SELECTED="8"`
+is the local backstop (this repo); the real fix belongs in
+`matrix_signals.py::on_snapshot()`'s `# 1. pick_selected` block (EdgeLane
+repo), which currently gates only on `_pick_key` + dwell. It should instead
+skip firing entirely while the pick's health/verdict is `BROKEN`/`DO NOT
+TRADE` or `state.last_trust_state[sym]` isn't `"in_sync"`, and only announce
+once the pick is genuinely healthy — ideally reusing `win_rate_notable`'s own
+earned-recovery gate (`recovered`/`crossed_green`, real graded wins behind
+it) rather than firing the moment bias merely re-aligns.
 
 Net effect, in the brainstorm's own words: not tweet-heavy, a drift of
 genuinely informative posts, each one earning its place by showing something
