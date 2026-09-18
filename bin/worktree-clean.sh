@@ -75,7 +75,20 @@ fi
 
 # --- 1. worktree dir + registration -----------------------------------------
 if [ -d "$WT_DIR" ]; then
-  git worktree remove "$WT_DIR" && echo "  removed worktree $WT_DIR"
+  # A worktree created by Claude Code's EnterWorktree is LOCKED by default —
+  # plain `git worktree remove` refuses on a locked worktree (distinct from
+  # its separate refusal on uncommitted changes, which the merged-check above
+  # already ruled out) and git's own error names the exact fix: `-f -f`.
+  # Unlock explicitly first (harmless no-op if it was never locked) rather
+  # than relying on double --force, so the reason is visible in the log.
+  # Getting this wrong is exactly how this used to fail SILENTLY: the plain
+  # `remove` call above errored out, the script kept going (no `set -e`),
+  # and `git branch -D` two steps down then failed too with "used by
+  # worktree" — while the remote-branch step after IT still succeeded and
+  # printed "done.", making a half-finished cleanup look complete.
+  git worktree unlock "$WT_DIR" 2>/dev/null || true
+  git worktree remove --force "$WT_DIR" && echo "  removed worktree $WT_DIR" \
+    || { echo "  ✗ could not remove worktree $WT_DIR — a session may still be using it"; exit 1; }
 fi
 git worktree prune
 
