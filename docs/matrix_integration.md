@@ -193,13 +193,20 @@ structure with bias diverged, the engine kept re-striking a Bear Put every
 poll — different legs each time, so each one *did* legally count as a new
 pick under `_pick_key`, firing `pick_selected` repeatedly with only the
 composite score changing (61.3, then 59.0) and the same "edge assumption
-didn't hold up / Bias re-syncing" copy both times. `MATRIX_MIN_GAP_HOURS_PICK_SELECTED`
-is the local backstop; the real fix belongs in `matrix_signals.py::on_snapshot()`'s
-`# 1. pick_selected` block (EdgeLane repo) — it currently gates only on
-`_pick_key` + dwell, with no check against the pick's own health/verdict
-(`BROKEN`/`DO NOT TRADE`) or the bias-trust state already tracked in
-`state.last_trust_state[sym]` (populated by `on_evaluation`, readable from
-`on_snapshot` since both close over the same module-level `state` object).
+didn't hold up / Bias re-syncing" copy both times.
+
+**Policy decision (2026-09-17): `pick_selected` is not a signal feed.** These
+posts exist to show the tool is sharp, not to broadcast every trade idea —
+so a couple a day is the target, and a BROKEN/diverged pick shouldn't post
+*at all*, not even once per divergence episode. `MATRIX_MIN_GAP_HOURS_PICK_SELECTED="8"`
+is the local backstop (this repo); the real fix belongs in
+`matrix_signals.py::on_snapshot()`'s `# 1. pick_selected` block (EdgeLane
+repo), which currently gates only on `_pick_key` + dwell. It should instead
+skip firing entirely while the pick's health/verdict is `BROKEN`/`DO NOT
+TRADE` or `state.last_trust_state[sym]` isn't `"in_sync"`, and only announce
+once the pick is genuinely healthy — ideally reusing `win_rate_notable`'s own
+earned-recovery gate (`recovered`/`crossed_green`, real graded wins behind
+it) rather than firing the moment bias merely re-aligns.
 
 Net effect, in the brainstorm's own words: not tweet-heavy, a drift of
 genuinely informative posts, each one earning its place by showing something
