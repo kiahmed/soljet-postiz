@@ -11,6 +11,42 @@ set -uo pipefail
 NAME="${1:-}"
 FORCE="${2:-}"
 
+# Bring local `main` in line with origin/main. A genuinely divergent local
+# main (someone committed straight to it outside the worktree/PR flow — this
+# happened once already: `git pull` afterward refused with "divergent
+# branches, need to specify how to reconcile") is a decision only a human
+# should make, so this only auto-handles the unambiguous cases: already even,
+# or a plain fast-forward. Prints what it did/found either way so a stale
+# main is never silently left stale.
+sync_main() {
+  git fetch origin --quiet || true
+  local local_head origin_head
+  local_head="$(git rev-parse main 2>/dev/null || true)"
+  origin_head="$(git rev-parse origin/main 2>/dev/null || true)"
+  [ -z "$origin_head" ] && return 0          # no remote reachable — nothing to sync
+  if [ "$local_head" = "$origin_head" ]; then
+    echo "  main: already up to date with origin/main"
+    return 0
+  fi
+  if git merge-base --is-ancestor main origin/main 2>/dev/null; then
+    if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then
+      git merge --ff-only origin/main --quiet && echo "  main: fast-forwarded to origin/main"
+    else
+      echo "  ⚠ main is behind origin/main but isn't checked out here — pull it yourself"
+    fi
+  elif git merge-base --is-ancestor origin/main main 2>/dev/null; then
+    echo "  main: already ahead of origin/main (local commits not yet pushed) — nothing to pull"
+  else
+    echo "  ✗ main has DIVERGED from origin/main — needs a human to reconcile"
+    echo "    (a local commit exists that origin doesn't, alongside origin's own new commits —"
+    echo "     someone committed straight to main outside the worktree/PR flow)"
+    echo "    From the main checkout, pick one:"
+    echo "      git pull --no-rebase   # merge — preserves both histories (recommended default)"
+    echo "      git pull --rebase      # replay local commits on top of origin's"
+    return 1
+  fi
+}
+
 # --- no name: "return to main" — the partner of `make ship` -----------------
 # After a ship/<stamp> PR merges, put HEAD back on an up-to-date main and delete
 # the branch you were on. Refuses if the branch isn't merged (unless FORCE=1) or
@@ -18,7 +54,8 @@ FORCE="${2:-}"
 if [ -z "$NAME" ]; then
   cur="$(git rev-parse --abbrev-ref HEAD)"
   if [ "$cur" = "main" ]; then
-    echo "[return-to-main] already on main — updating"; git pull --ff-only 2>/dev/null || true
+    echo "[return-to-main] already on main — updating"
+    sync_main || exit 1
     exit 0
   fi
   if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -36,7 +73,7 @@ if [ -z "$NAME" ]; then
     exit 1
   fi
   git checkout main || exit 1
-  git pull --ff-only 2>/dev/null || true
+  sync_main || exit 1
   git rev-parse --verify "$cur" >/dev/null 2>&1 && git branch -D "$cur" && echo "  deleted local branch $cur"
   if git ls-remote --exit-code --heads origin "$cur" >/dev/null 2>&1; then
     git push origin --delete "$cur" && echo "  deleted remote branch $cur"
@@ -48,6 +85,14 @@ fi
 # Always operate from the MAIN working tree, never from inside the target worktree.
 MAIN="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
 cd "$MAIN" || { echo "can't locate main worktree"; exit 1; }
+
+# Keep local main from going stale here too — the merged-check below already
+# fetches and compares against origin/main regardless, so this isn't needed
+# for correctness, but skipping it is exactly how you end up running `git
+# pull` yourself right after and hitting a divergence this script could have
+# caught. Non-fatal: the worktree/branch teardown below is independent of
+# main's state, so a genuine divergence here warns but doesn't block it.
+sync_main || true
 
 WT_DIR=".claude/worktrees/$NAME"
 BRANCH="worktree-$NAME"
