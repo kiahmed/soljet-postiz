@@ -39,6 +39,7 @@ def build_source(ds, tier) -> Source:
         return FirestoreCards(
             gcp_project=ds.params["gcp_project"],
             collection=ds.params["collection"],
+            stats_doc=ds.params.get("stats_doc", ""),
         )
     if ds.type == "simmer_api":
         from .simmer_source import SimmerAPI

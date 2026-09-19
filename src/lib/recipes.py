@@ -6,10 +6,11 @@ Adding a new recipe = one new function here + one CLI sub-arg.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .composer import _llm_rewrite, _read_context, compose_catalyst, compose_finding, compose_graph
+from .composer import (_llm_rewrite, _read_context, compose_catalyst, compose_finding,
+                       compose_graph, compose_graph_stats)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -184,6 +185,47 @@ def recipe_graph(tier: Tier, source_id: str) -> PostBundle:
         )
     raise KeyError(f"source-id '{source_id}' not found in tier '{tier.id}' "
                    f"(no cards_json/firestore_cards source configured)")
+
+
+def recipe_graph_stats(tier: Tier) -> PostBundle:
+    """A recurring 'state of the [sector] graph' post (docs/social-posting-
+    strategy.md Part 2 §3/Phase-1-item-3) from stats{} already computed by
+    catalyst-knowledge-graph's export — not tied to any one card, so there's
+    no per-card source_id; a per-ISO-week one is synthesized instead so a
+    second call the same week is at least recognizable as a repeat by
+    anything checking posted_log, even though this recipe doesn't itself
+    gate on it (manually invoked for now, see bin/graph_stats_post.py).
+
+    NOT the same thing as recipe_sector_digest() below (an older, unrelated
+    recipe: top-N Firestore findings in a sector, LLM-summarized) — picked
+    a distinct name specifically to avoid shadowing that existing function.
+
+    Raises KeyError (same "nothing to post" contract as every other recipe
+    here) when the tier's source doesn't expose stats() at all, or the stats
+    it returns have neither field compose_graph_stats needs — a stats-less
+    week just means no post that week, never a broken one."""
+    for ds in tier.sources:
+        if ds.type not in ("cards_json", "firestore_cards"):
+            continue
+        src = build_source(ds, tier)
+        get_stats = getattr(src, "stats", None)
+        if not callable(get_stats):
+            continue
+        stats = get_stats() or {}
+        if not stats.get("top_chokepoint_entity") and not stats.get("fastest_accelerating_relationship"):
+            continue
+        sector = tier.raw.get("SECTORS", "").split(",")[0].strip() or (
+            tier.id.split(".")[-1] if tier.parent_id else "")
+        text = compose_graph_stats(tier, stats, sector=sector)
+        week = datetime.now(timezone.utc).strftime("%G-W%V")
+        source_id = f"GRAPH-STATS-{tier.id}-{week}"
+        return PostBundle(
+            text=text,
+            source_type="graph_stats",
+            source_id=source_id,
+            context={"title": text.splitlines()[0][:120] if text else ""},
+        )
+    raise KeyError(f"tier '{tier.id}': no source exposes stats(), or stats has no usable fields")
 
 
 # ---------- Simmer (Facades) — event-driven, deterministic templating ----------

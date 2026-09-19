@@ -197,6 +197,23 @@ def _kind_channel_enabled(tier: Tier, kind: str, label: str) -> bool:
     return str(tier.raw.get(key, "true")).strip().lower() != "false"
 
 
+def _thread_lead_in(text: str, max_chars: int = 50) -> str:
+    """First line of the composed text, trimmed — passed as
+    split_for_thread()'s continuation_prefix so a thread's 2nd+ part still
+    says what it's about if seen out of context (a quote-tweet, a direct
+    permalink), instead of reading as an orphaned fragment (the failure mode
+    docs/graph-posters.md warns about — "never post the graph alone"; long
+    graph posts already threading via split_for_thread was the path that
+    warning didn't anticipate). Works from `text` alone (not the PostBundle),
+    so it applies whether the content came fresh or from the staged cache,
+    which carries text/parts but not the bundle's `context` dict."""
+    first_line = (text or "").strip().split("\n", 1)[0].strip()
+    # Trim trailing dash/colon/punctuation left dangling by the hard cut at
+    # max_chars (e.g. "...behind ABB —") so it doesn't collide with
+    # split_for_thread's own " — " joiner ("ABB — — Net headwind").
+    return first_line[:max_chars].rstrip(" -—:;,")
+
+
 def _x_min_confidence(tier) -> float:
     """X_MIN_CONFIDENCE from tier.config ('' = gate off). X posts cost real
     money and land on a curated channel; LinkedIn takes everything."""
@@ -284,7 +301,23 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
         return None
     if not items:
         return None
-    items.sort(key=lambda it: it["_when"], reverse=not oldest)
+    # OLDEST_INTERLEAVE_EVERY (docs/social-posting-strategy.md Part 2 §5): the
+    # daily run always drains oldest-first (run-daily.sh hardcodes OLDEST=1),
+    # which is correct for completeness but means "Back in <when>:" opens
+    # nearly every post while a large backlog drains — the feed reads as
+    # permanently behind. Unset (default) = byte-identical to today. Set to
+    # N>0: every Nth pick (by how many of this tkey are already fully done)
+    # takes the newest-ready item instead of the oldest, so a live item
+    # surfaces periodically without abandoning the drain.
+    eff_oldest = oldest
+    if oldest and done:
+        try:
+            interleave_n = int(str(tier.raw.get("OLDEST_INTERLEAVE_EVERY", "") or "0"))
+        except ValueError:
+            interleave_n = 0
+        if interleave_n > 0 and len(done) % interleave_n == 0:
+            eff_oldest = False
+    items.sort(key=lambda it: it["_when"], reverse=not eff_oldest)
     return items[0]["_id"]
 
 
@@ -526,7 +559,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             note = (f" → attaches the {kind} image" if pol == "attach"
                     else " → no media; platform renders the link card" if pol == "link_card"
                     else f" → {media_paths[0] if media_paths else 'no media'}")
-            ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(lbl))
+            ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(lbl),
+                                             continuation_prefix=_thread_lead_in(text))
             ch_parts, entities_cache = channel_parts(
                 tier, lbl, source_type=source_type, source_id=source_id,
                 parts=ch_base_parts, entities_cache=entities_cache)
@@ -593,7 +627,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         # and a per-channel thread split — X's 280-char cap needs one, LinkedIn's
         # ~3000-char cap doesn't, so applying the shared `parts` (X-sized) to
         # every channel used to turn a >280-char post into two LinkedIn posts.
-        ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(label))
+        ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(label),
+                                         continuation_prefix=_thread_lead_in(text))
         ch_parts, entities_cache = channel_parts(
             tier, label, source_type=source_type, source_id=source_id,
             parts=ch_base_parts, entities_cache=entities_cache)

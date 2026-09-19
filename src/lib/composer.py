@@ -155,6 +155,34 @@ def card_confidence(card: dict) -> float:
         return 0.0
 
 
+def _mechanism_clause(card: dict | None, max_chars: int = 220) -> str | None:
+    """One sentence of 'why' from the card's strongest relationship's own
+    `mechanism` field — quoted VERBATIM, never rephrased or re-derived. This
+    is deliberate, not a shortcut: the adversarial pass documented above (the
+    entity-free-hook comment) found real errors — inverted direction, past
+    tense on a pending deal — every time a template tried to RE-SYNTHESIZE a
+    sentence from rel/entities/mechanism. Quoting mechanism's own words
+    carries none of that risk; it's the exact trust model compose_catalyst()
+    already applies to share.linkedin_text/twitter_text (KG-authored prose,
+    used as-is). Returns None — never a fabricated filler sentence — when
+    there's no usable relationship or no mechanism text; `card_confidence`
+    already established `_top_relationship` as the one shared definition of
+    "the card's strongest relationship", reused here rather than re-derived."""
+    rel = _top_relationship(card) if isinstance(card, dict) else None
+    if not rel:
+        return None
+    mech = str(rel.get("mechanism") or "").strip()
+    if not mech:
+        return None
+    m = re.match(r"(.{1,%d}?[.!?])(\s|$)" % max_chars, mech)
+    if m:
+        return m.group(1)
+    if len(mech) <= max_chars:
+        return mech
+    clipped = mech[:max_chars].rsplit(" ", 1)[0].rstrip(",;: ")
+    return f"{clipped}…" if clipped else None
+
+
 def _relationship_hook(card: dict | None, source_id: str = "") -> str | None:
     """Entity-free hook for the card's strongest relationship, or None to fall
     back to the generic hook. Never raises — a hook is cosmetic."""
@@ -391,6 +419,17 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
         text = share.get("linkedin_text") or share.get("twitter_text") or headline
     text = re.sub(r"\s*https?://\S+\s*$", "", text).strip()  # drop trailing source link
 
+    # "Why it matters" — one verbatim sentence from the strongest relationship's
+    # own `mechanism` field (docs/social-posting-strategy.md Part 2 §1: the
+    # headline alone carries no reasoning; this is the field already sitting
+    # unused in the payload). Off by a config flag for a clean rollback if it
+    # ever reads oddly at scale — default ON, matches "the data already
+    # supports this" being the whole point.
+    if str(tier.raw.get("MECHANISM_CLAUSE_ENABLED", "true")).strip().lower() != "false":
+        mech = _mechanism_clause(catalyst)
+        if mech:
+            text = f"{text}\n\n{mech}"
+
     tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
 
     text, hook = _temporal_frame(
@@ -447,5 +486,52 @@ def compose_graph(tier: Tier, catalyst: dict, related: list[dict], *, max_chars:
     text, hook = _temporal_frame(
         draft, catalyst.get("date"), card=catalyst,
         source_id=str(catalyst.get("card_id") or catalyst.get("id") or ""))
+    body = _append_hashtags(text, tags, max_chars)
+    return f"{body}\n\n{hook}"
+
+
+def compose_graph_stats(tier: Tier, stats: dict, *, sector: str = "",
+                          max_chars: int = 280) -> str:
+    """A recurring 'state of the sector' post from catalyst-knowledge-graph's
+    own computed `stats{}` (src/export.py::_compute_stats — real, live,
+    already in every export, used by no post anywhere before this).
+    DETERMINISTIC, no LLM — same contract every composer here holds.
+
+    Honest framing, not a dressed-up trend claim (docs/social-posting-
+    strategy.md Part 2 takeaway #3): `top_chokepoint_entity` is the
+    most-connected entity ALL-TIME (a raw count, no decay), and
+    `fastest_accelerating_relationship` is the most common relationship TYPE
+    in the last 14 days (a raw count, no baseline comparison) — the wording
+    below says exactly that, not "growth" or "acceleration" math the data
+    doesn't compute (yet — see docs/social-posting-strategy.md Part 2 §4,
+    catalyst-knowledge-graph's own graph_insights[] would be the real version
+    of this once built there).
+
+    Raises ValueError when `stats` has neither field — the caller
+    (recipe_sector_digest) treats that as "nothing to post", not an error to
+    surface to a reader."""
+    choke = stats.get("top_chokepoint_entity")
+    fastest = stats.get("fastest_accelerating_relationship")
+    if not choke and not fastest:
+        raise ValueError("compose_graph_stats: stats has neither top_chokepoint_entity nor fastest_accelerating_relationship")
+
+    sec_label = f" {sector}" if sector else ""
+    lines = [f"State of the{sec_label} graph this week:"]
+    if choke:
+        lines.append(f"→ Most-connected name right now: {choke}.")
+    if fastest:
+        lines.append(f"→ Busiest relationship type (last 2 weeks): {fastest.replace('_', ' ')}.")
+    recent, total = stats.get("catalysts_last_7d"), stats.get("total_catalysts")
+    if recent is not None and total is not None:
+        lines.append(f"\n{recent} new catalysts this week, {total} tracked overall.")
+    draft = "\n".join(lines)
+
+    tags = _relevant_hashtags(sector, [])
+    # kind="finding": this has no single card/relationship graph to visualize
+    # (it's a sector-wide summary), so the generic "elsewhere in the space"
+    # hook applies, not compose_graph's per-card one. date=None -> _card_age_
+    # days returns None -> _temporal_frame treats it as "recent" -> no
+    # "Back in <when>:" prefix, correctly, since this is a live-now summary.
+    text, hook = _temporal_frame(draft, None, kind="finding")
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"
