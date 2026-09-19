@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS pending (
     queued_at   TEXT NOT NULL,
     PRIMARY KEY (tier, source_id, post_id)
 );
+
+-- No-auto-retry DLQ (same policy as the simmer/matrix poster fix, commit
+-- 817fd82: "if it fails ... don't even go for twice, just log"). A channel
+-- that REJECTED or ERRORed here is a provider-side rejection (e.g. X's
+-- depleted-credits "Unknown Error") that a later retry can't fix by itself —
+-- without this, the picker reselects the SAME card for that channel on every
+-- subsequent fire forever (that's what happened to ROB-082226-004 on X:
+-- 08:30, 11:30, 14:02, 14:30 the same day, all the same error). QUEUE/stuck
+-- is a different, genuinely transient state and keeps using `pending` above,
+-- unaffected. Manual recovery once the underlying issue is fixed:
+-- `bin/post.py --recipe single --source-id <id> --push --force`, or
+-- posted_log.clear_failed(tier, source_id[, channel]).
+CREATE TABLE IF NOT EXISTS failed (
+    tier        TEXT NOT NULL,
+    source_id   TEXT NOT NULL,
+    channel     TEXT NOT NULL,
+    reason      TEXT,
+    failed_at   TEXT NOT NULL,
+    PRIMARY KEY (tier, source_id, channel)
+);
 """
 
 
@@ -196,6 +216,52 @@ def posted_ids_for(tier: str) -> set[str]:
     with _conn() as c:
         rows = c.execute("SELECT source_id FROM posted WHERE tier=?", (tier,)).fetchall()
     return {r[0] for r in rows}
+
+
+# ------------------------------------------------------------- no-retry DLQ
+
+def mark_failed(tier: str, source_id: str, channel: str, reason: str = "") -> None:
+    """Record a channel that REJECTED or ERRORed so the picker never
+    reselects this (tier, source_id) for that channel again automatically.
+    See the `failed` table comment for why."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO failed (tier, source_id, channel, reason, failed_at) "
+            "VALUES (?,?,?,?,?)",
+            (tier, source_id, channel, (reason or "")[:500],
+             datetime.now(timezone.utc).isoformat()))
+
+
+def failed_channels(tier: str) -> dict[str, set[str]]:
+    """source_id -> set of channels already given up on, for every card in
+    this tier. Bulk form of failed_channels_for(), same shape as
+    published_channels()."""
+    with _conn() as c:
+        rows = c.execute("SELECT source_id, channel FROM failed WHERE tier=?", (tier,)).fetchall()
+    out: dict[str, set[str]] = {}
+    for sid, ch in rows:
+        out.setdefault(sid, set()).add(ch)
+    return out
+
+
+def failed_channels_for(tier: str, source_id: str) -> set[str]:
+    """Channels already given up on for this specific card — skip re-attempting them."""
+    with _conn() as c:
+        rows = c.execute("SELECT channel FROM failed WHERE tier=? AND source_id=?",
+                         (tier, source_id)).fetchall()
+    return {r[0] for r in rows}
+
+
+def clear_failed(tier: str, source_id: str, channel: str | None = None) -> None:
+    """Manual escape hatch: after fixing the underlying issue (e.g. topped-up
+    X credits), clear the DLQ mark so the picker considers this card again on
+    its own. Without a channel, clears every channel for this card."""
+    with _conn() as c:
+        if channel:
+            c.execute("DELETE FROM failed WHERE tier=? AND source_id=? AND channel=?",
+                      (tier, source_id, channel))
+        else:
+            c.execute("DELETE FROM failed WHERE tier=? AND source_id=?", (tier, source_id))
 
 
 def all_entries(tier: str | None = None) -> list[dict]:

@@ -34,8 +34,9 @@ A tier with nothing new is skipped. An item already posted is never reposted
 - **LinkedIn** publishes automatically. Nothing to do.
 - **X** currently fails (dev-app API credits are depleted). When that happens
   the job **catches it, keeps going, and never crashes** — the post is queued
-  for you to post by hand. **When you top up X credits, it just works again —
-  no code change, no toggle.**
+  for you to post by hand, and that ONE card+channel won't be auto-retried
+  again (see "Delivery & error handling" below). **When you top up X credits,
+  new cards just work again — no code change, no toggle.**
 
 So day to day you do nothing. You only step in for the X (or any failed) posts.
 
@@ -58,6 +59,41 @@ Two places, both passive — check whenever you drop in, not on a daily leash:
 
    Copy the **Text**, attach the **Image** if one is listed, post it on the
    platform, then delete that block from the file.
+
+---
+
+## Delivery & error handling — one attempt per (card, channel), then it stops
+
+A channel that REJECTS (Postiz's API call itself failed) or ERRORs (queued
+but Postiz couldn't publish it — for X this is almost always depleted API
+credits) is logged to the manual queue **once** and then never auto-retried
+for that specific card again — the picker won't reselect it on a later fire.
+Same rationale, and the same fix, as the simmer/matrix posters
+(`docs/matrix_integration.md` / `docs/simmer_integration.md` §"Delivery &
+error handling"): retrying a provider-side rejection like depleted credits
+doesn't fix it, it just re-fails on a schedule. Before this, a card could
+fail the SAME way on every single fire all day (this happened to
+`ROB-082226-004` on X: four fires, four identical "Unknown Error"s, same
+card each time).
+
+- Tracked in `data/posted_log.sqlite`'s `failed` table — separate from the
+  `posted` table, so `bin/post-status.py` / `bin/posted-log.py` still show
+  the card as unpublished (it is), just no longer eligible for automatic
+  retry on that channel.
+- **Other channels for the same card are unaffected** — an X failure doesn't
+  stop LinkedIn from being tried (or vice versa); each channel gets its own
+  one attempt.
+- **A 429 / rate-limit response is NOT treated as a card failure** — that's
+  Postiz's own throughput cap, not something wrong with this card, so it
+  stays eligible and the whole batch backs off instead (existing throttle
+  handling, unchanged).
+- **Manual recovery**, once the underlying issue is fixed (e.g. X credits
+  topped up): `python3 bin/post.py --recipe single --tier <tier> --source-id
+  <ID> --push --force` posts it directly, bypassing the picker entirely. To
+  make the picker consider it again automatically instead, clear the mark
+  from a Python shell: `from src.lib.posted_log import clear_failed;
+  clear_failed("<tier>", "<ID>", "X")` (drop the channel arg to clear every
+  channel for that card).
 
 ---
 
