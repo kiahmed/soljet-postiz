@@ -236,12 +236,20 @@ def pick_unposted(tier: Tier, since, *, oldest: bool = False,
     # it to has PUBLISHED. A card whose X failed but LinkedIn succeeded stays
     # eligible so the missing channel can be filled in later — it used to look
     # done and was stranded forever.
+    # failed_map: channels already given up on (no-auto-retry DLQ) — a card
+    # whose only wanted channel already REJECTED/ERRORed counts as done too,
+    # so the picker doesn't reselect it every fire. See posted_log's `failed`
+    # table comment.
+    failed_map = posted_log.failed_channels(tkey)
     done: set[str] = set()
     for sid, chans in posted_log.published_channels(tkey).items():
         if chans is None:            # pre-channel-tracking row → treat as handled
             done.add(sid); continue
-        got = {ch for ch, st in chans.items() if st == 'PUBLISHED'}
+        got = {ch for ch, st in chans.items() if st == 'PUBLISHED'} | failed_map.get(sid, set())
         if not want_channels or want_channels <= got:
+            done.add(sid)
+    for sid, chs in failed_map.items():   # cards that only ever failed (no posted row at all)
+        if sid not in done and (not want_channels or want_channels <= chs):
             done.add(sid)
     posted = done | pending_ids_for(tkey) | (exclude or set())
     # A card tier must never surface an item without the image its kind needs:
@@ -548,6 +556,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
     any_published = any_stuck = any_throttled = False
     # channels this card already got — a retry must not double-post them
     already_done = posted_log.published_channels_for(tkey, source_id)
+    # channels already given up on (no-auto-retry DLQ) — a provider-side
+    # rejection (e.g. depleted X credits) won't be fixed by trying again.
+    already_failed = posted_log.failed_channels_for(tkey, source_id)
     # Manual both-channels run: the picker only gates X-ONLY selection, so a
     # below-gate card picked for LinkedIn must still skip the X channel here.
     # Scheduled fires are per-channel and never reach this.
@@ -566,6 +577,8 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             pass
     if already_done:
         print(f"    [retry] already published: {', '.join(sorted(already_done))}")
+    if already_failed:
+        print(f"    [dlq] not retrying (already failed): {', '.join(sorted(already_failed))}")
     attach_cache = None  # memoized attach media, reused across 'attach' channels
     entities_cache = None  # memoized entity list for per-channel @handles
     for iid in iids:
@@ -596,6 +609,15 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
                                        "url": "(previously)"})
             any_published = True
             continue
+        if label in already_failed:
+            # No-auto-retry DLQ (matches the simmer/matrix poster fix): this
+            # channel already REJECTED/ERRORed for this card and was logged
+            # once — don't attempt it again on every subsequent fire. Manual
+            # recovery: `bin/post.py --recipe single --source-id <id> --push
+            # --force` once the underlying issue (e.g. X credits) is fixed.
+            print(f"    [{label}] already failed for this card — not retrying (DLQ)")
+            result["channels"].append({"channel": label, "state": "SKIPPED_FAILED"})
+            continue
         print(f"    [{label}] imagery: {policy} → {len(ch_media)} media")
         pol_note = f" [imagery: {policy}]"
         try:
@@ -604,9 +626,15 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             post_id = res[0]["postId"] if isinstance(res, list) and res else ""
         except Exception as e:  # noqa: BLE001 — isolate one channel's failure
             print(f"    [{label}] push failed: {e}")
-            if "429" in str(e) or "Too Many Requests" in str(e) or "Throttler" in str(e):
+            throttled = "429" in str(e) or "Too Many Requests" in str(e) or "Throttler" in str(e)
+            if throttled:
                 any_throttled = True   # Postiz's own API cap; every later card will fail too
             queue_manual(tier, label, ch_parts, media_paths, f"Postiz rejected the post: {e}{pol_note}")
+            # A 429 is OUR batch hitting Postiz's rate cap, not a problem with
+            # this specific card — it deserves a retry next fire. Anything
+            # else (a provider-side rejection) doesn't get fixed by retrying.
+            if not throttled:
+                posted_log.mark_failed(tkey, source_id, label, f"REJECTED: {e}")
             result["channels"].append({"channel": label, "state": "REJECTED"})
             continue
 
@@ -618,7 +646,9 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             print(f"    [{label}] ERROR: {err or 'unknown'}")
             queue_manual(tier, label, ch_parts, media_paths,
                          f"Publish failed: {err or 'unknown'} — see Postiz UI; "
-                         f"for X this is usually depleted API credits.{pol_note}")
+                         f"for X this is usually depleted API credits. Won't "
+                         f"auto-retry this channel for this card.{pol_note}")
+            posted_log.mark_failed(tkey, source_id, label, f"ERROR: {err or 'unknown'}")
         else:  # QUEUE at timeout — workers likely down
             any_stuck = True
             print(f"    [{label}] STUCK in QUEUE after {POLL_TIMEOUT}s "
