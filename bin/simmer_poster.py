@@ -47,7 +47,7 @@ from src.lib.market_hours import is_market_open, market_hours_enforced  # noqa: 
 from src.lib.postiz_client import PostizClient  # noqa: E402
 from src.lib.recipes import recipe_simmer  # noqa: E402
 from src.lib.sources.simmer_source import make_card_id  # noqa: E402
-from src.lib.thread import split_for_thread  # noqa: E402
+from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
 from src.lib import posted_log  # noqa: E402
 
 TIER_ID = "simmer"
@@ -193,7 +193,6 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
              note="read-only API had no card — posting from event attributes only")
         result["enrich"] = "minimal"
 
-    parts = bundle.parts or split_for_thread(bundle.text)
     media_paths = auto_media(tier, bundle, "single")
     iids = integration_ids_for(tier)
     result.update(card_id=card_id, text=bundle.text,
@@ -211,8 +210,10 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         rendered = {}
         for i in iids:
             lbl = channel_label(tier, i)
+            ch_base_parts = bundle.parts or split_for_thread(
+                bundle.text, max_chars=max_chars_for_channel(lbl))
             ch_parts, ec = channel_parts(tier, lbl, source_type="simmer_api",
-                                         source_id=card_id, parts=parts, entities_cache=ec)
+                                         source_id=card_id, parts=ch_base_parts, entities_cache=ec)
             rendered[lbl] = "\n\n".join(ch_parts)
         result["rendered"] = rendered
         return result
@@ -233,8 +234,15 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
     posted_channels = []
     for iid in iids:
         lbl = channel_label(tier, iid)
+        # Per-channel split, not a shared X-sized parts list — compose_simmer()
+        # tops out at 260 chars today so this never bit Simmer in practice, but
+        # applying X's 280-char split to LinkedIn (real cap ~3000) is the exact
+        # bug that turned the robotics graph post into two LinkedIn posts
+        # instead of one (see bin/daily.py / bin/post.py's identical fix).
+        ch_base_parts = bundle.parts or split_for_thread(
+            bundle.text, max_chars=max_chars_for_channel(lbl))
         ch_parts, ec = channel_parts(tier, lbl, source_type="simmer_api",
-                                     source_id=card_id, parts=parts, entities_cache=ec)
+                                     source_id=card_id, parts=ch_base_parts, entities_cache=ec)
         try:
             resp = client.create_post(parts=ch_parts, integration_ids=[iid],
                                       mode=mode, media=media or None)
