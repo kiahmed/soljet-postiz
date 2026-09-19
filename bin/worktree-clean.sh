@@ -98,8 +98,21 @@ if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
 fi
 
 # --- 3. remote branch -------------------------------------------------------
+# Best-effort: some shells (an unattended Claude Code session, say) have no
+# git credential helper for a write, even though `ls-remote` (read) above
+# worked fine unauthenticated. Capture stderr instead of letting a raw
+# `fatal: could not read Username...` leak out looking like a real failure —
+# it isn't one; the worktree + local branch are already gone either way, and
+# GitHub auto-deletes the remote branch on merge in the normal case anyway.
 if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-  git push origin --delete "$BRANCH" && echo "  deleted remote branch $BRANCH"
+  if push_err="$(git push origin --delete "$BRANCH" 2>&1 >/dev/null)"; then
+    echo "  deleted remote branch $BRANCH"
+  elif echo "$push_err" | grep -qiE 'could not read username|permission denied|authentication failed|unable to access|403'; then
+    echo "  remote branch $BRANCH left behind — no push credentials in this shell."
+    echo "    Run this from a shell that can push: git push origin --delete $BRANCH"
+  else
+    echo "  ✗ could not delete remote branch $BRANCH: $push_err"
+  fi
 else
   echo "  remote branch $BRANCH already gone"
 fi
