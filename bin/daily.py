@@ -47,7 +47,7 @@ from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
 from src.lib.postiz_client import PostizClient
 from src.lib.composer import card_confidence
 from src.lib.recipes import PostBundle, recipe_graph, recipe_single
-from src.lib.thread import split_for_thread
+from src.lib.thread import max_chars_for_channel, split_for_thread
 
 # Postgres/Temporal live in docker on the same host as this script.
 PG_CONTAINER = os.getenv("POSTIZ_PG_CONTAINER", "postiz-postgres")
@@ -518,9 +518,10 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             note = (f" → attaches the {kind} image" if pol == "attach"
                     else " → no media; platform renders the link card" if pol == "link_card"
                     else f" → {media_paths[0] if media_paths else 'no media'}")
+            ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(lbl))
             ch_parts, entities_cache = channel_parts(
                 tier, lbl, source_type=source_type, source_id=source_id,
-                parts=parts, entities_cache=entities_cache)
+                parts=ch_base_parts, entities_cache=entities_cache)
             print(f"  --- [{lbl}]  imagery: {pol}{note} ---")
             for line in "\n\n".join(ch_parts).splitlines():
                 print(f"  {line}")
@@ -575,10 +576,14 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             client, tier, label, source_type=source_type, source_id=source_id,
             parts=parts, text=text, base_media=media, attach_cache=attach_cache,
             kind=kind)
-        # Per-channel @handles (Figure → @figure on LinkedIn, @Figure_robots on X).
+        # Per-channel @handles (Figure → @figure on LinkedIn, @Figure_robots on X),
+        # and a per-channel thread split — X's 280-char cap needs one, LinkedIn's
+        # ~3000-char cap doesn't, so applying the shared `parts` (X-sized) to
+        # every channel used to turn a >280-char post into two LinkedIn posts.
+        ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(label))
         ch_parts, entities_cache = channel_parts(
             tier, label, source_type=source_type, source_id=source_id,
-            parts=parts, entities_cache=entities_cache)
+            parts=ch_base_parts, entities_cache=entities_cache)
         policy = tier.imagery_policy.get(label.lower(), "legacy")
         if policy == "attach" and not ch_media:
             print(f"    [{label}] no attach image — degrading to link_card")

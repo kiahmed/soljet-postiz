@@ -25,6 +25,18 @@ _BOUNDARIES = [
 ]
 
 
+def max_chars_for_channel(label: str) -> int:
+    """Char budget to pass to split_for_thread(), per channel. X's 280 cap is
+    the reason the splitter exists; LinkedIn's real organic-post cap is
+    ~3000, so anything our composers produce fits in one native post there.
+    Applying X's limit unconditionally to every channel — the pre-existing
+    behavior — never mattered while everything topped out at 280 chars; a
+    graph post's ~500-char budget is the first thing to actually exceed it,
+    and it silently turned every LinkedIn graph post into two separate posts
+    instead of one."""
+    return 280 if label.upper() == "X" else 3000
+
+
 def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8) -> list[str]:
     """Return [text] if it fits; otherwise a list of ' i/n'-suffixed chunks ≤ max_chars."""
     text = text.strip()
