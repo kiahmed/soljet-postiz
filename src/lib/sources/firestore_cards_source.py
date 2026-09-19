@@ -22,10 +22,16 @@ from .base import Source
 
 
 class FirestoreCards(Source):
-    def __init__(self, gcp_project: str, collection: str, **_):
+    def __init__(self, gcp_project: str, collection: str, stats_doc: str = "", **_):
         # Empty (unset ${GCP_PROJECT}) → fall back to the gcloud ADC default project.
         self.client = firestore.Client(project=gcp_project or None)
         self.collection = collection  # e.g. "CKG-Robotics/catalysts/items"
+        # Full doc path to the sector's graph-projection doc, e.g.
+        # "CKG-Robotics/graph/sectors/Robotics" (technical_spec.md §2.5) — a
+        # SEPARATE doc from `collection` above, holding `stats{}` (see
+        # stats()). Optional and unrelated to the card-reading path above;
+        # '' (default, unset SECTOR_STATS_DOC) just means stats() is a no-op.
+        self.stats_doc = stats_doc or ""
 
     def _coll(self):
         return self.client.collection(self.collection)
@@ -52,3 +58,19 @@ class FirestoreCards(Source):
             return list(self.get(item_id).get("relationships") or [])
         except KeyError:
             return []
+
+    def stats(self) -> dict:
+        """The sector's `stats{}` (top_chokepoint_entity, fastest_
+        accelerating_relationship, ...) from the graph-projection doc at
+        `self.stats_doc` — a document OUTSIDE `self.collection`, only read
+        if configured (SECTOR_STATS_DOC in tier.config). Never raises: no
+        config, a missing doc, or a doc with no `stats` field all degrade to
+        {} — recipe_graph_stats() treats that as "nothing to post", the
+        same fail-closed contract every other source method here holds."""
+        if not self.stats_doc:
+            return {}
+        try:
+            snap = self.client.document(self.stats_doc).get()
+        except Exception:  # noqa: BLE001
+            return {}
+        return (snap.to_dict() or {}).get("stats", {}) if snap.exists else {}

@@ -37,8 +37,16 @@ def max_chars_for_channel(label: str) -> int:
     return 280 if label.upper() == "X" else 3000
 
 
-def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8) -> list[str]:
-    """Return [text] if it fits; otherwise a list of ' i/n'-suffixed chunks ≤ max_chars."""
+def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8,
+                     continuation_prefix: str = "") -> list[str]:
+    """Return [text] if it fits; otherwise a list of ' i/n'-suffixed chunks ≤ max_chars.
+
+    continuation_prefix: prepended to every part AFTER the first (never the
+    first — it already opens with the real content). A part seen out of
+    thread order (a quote-tweet, a direct permalink) otherwise reads as an
+    orphaned fragment with no idea what it's about. Skipped for any
+    individual part where adding it would push that part over max_chars —
+    this never trades self-containment for an over-length tweet."""
     text = text.strip()
     if len(text) <= max_chars:
         return [text]
@@ -63,4 +71,10 @@ def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8) -
         rest = rest[advance:].lstrip()
 
     n = len(chunks)
-    return [f"{c} {i + 1}/{n}" for i, c in enumerate(chunks)]
+    parts = [f"{c} {i + 1}/{n}" for i, c in enumerate(chunks)]
+    if continuation_prefix:
+        for i in range(1, len(parts)):
+            candidate = f"{continuation_prefix} — {parts[i]}"
+            if len(candidate) <= max_chars:
+                parts[i] = candidate
+    return parts

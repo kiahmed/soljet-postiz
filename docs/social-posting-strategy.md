@@ -300,7 +300,7 @@ Two consequences worth naming plainly:
    `_top_relationship(card)` already exists and already ranks by
    confidence/evidence/impact (composer.py:119) — reuse it (don't
    re-derive "the top relationship" a second way). Add a
-   `_mechanism_clause(card, max_chars=140)` that takes
+   `_mechanism_clause(card, max_chars=220)` that takes
    `_top_relationship(card).get("mechanism")`, cuts at a sentence boundary
    under the budget, and returns `None` if there's no relationship or no
    mechanism text (fail closed, exactly like `_relationship_hook`). Insert

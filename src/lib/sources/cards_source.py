@@ -62,3 +62,12 @@ class CardsJSON(Source):
             return list(self.get(item_id).get("relationships") or [])
         except KeyError:
             return []
+
+    def stats(self) -> dict:
+        """The export's top-level `stats{}` (total_catalysts,
+        catalysts_last_7d, top_chokepoint_entity, fastest_accelerating_
+        relationship — catalyst-knowledge-graph's src/export.py::
+        _compute_stats). Used by recipe_graph_stats(); {} if absent so a
+        stats-less export degrades to "nothing to post", never an error."""
+        data = self._load()
+        return data.get("stats") or {} if isinstance(data, dict) else {}
