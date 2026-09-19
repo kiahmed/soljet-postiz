@@ -220,10 +220,17 @@ def entity_tags(tier, label: str, entities: list, *, context: str = "") -> list[
 def channel_parts(tier, label: str, *, source_type: str, source_id: str,
                   parts: list[str], entities_cache):
     """Per-channel post parts: the body is identical across channels; we append
-    the channel's entity tags (@handles and/or $cashtags per ENTITY_TAG_MODE) at
-    the END OF THE FIRST PARAGRAPH — right after the hashtags, before the forward
-    hook + deep link. Returns (parts, entities_cache) — entities_cache memoizes
-    the subject-entity lookup across channels."""
+    the channel's entity tags (@handles and/or $cashtags per ENTITY_TAG_MODE)
+    right after the hashtags — whichever paragraph of parts[0] carries them,
+    not necessarily the first. A card post's body+hashtags IS paragraph 0; a
+    graph post's dependency-map has an extra entity-list paragraph before its
+    hashtag/outlook line, so anchoring on "first paragraph" landed tags before
+    the hashtags instead of after. parts[0] also has a hook paragraph and (if a
+    deep link was appended) a link paragraph AFTER the hashtags, so anchoring
+    on "last paragraph" is equally wrong — hence finding the hashtag paragraph
+    itself rather than guessing a fixed position. Returns (parts,
+    entities_cache) — entities_cache memoizes the subject-entity lookup
+    across channels."""
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
     ctx = _ctx_cache.get(source_id, "")
@@ -231,12 +238,10 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
     if not tags or not parts:
         return reply_link_parts(tier, label, parts), entities_cache
     tag_str = " ".join(tags)
-    p0 = parts[0]
-    if "\n\n" in p0:                       # after the first paragraph (hashtags)
-        head, rest = p0.split("\n\n", 1)
-        p0 = f"{head.rstrip()} {tag_str}\n\n{rest}"
-    else:
-        p0 = f"{p0.rstrip()} {tag_str}"
+    paras = parts[0].split("\n\n")
+    idx = next((i for i, p in enumerate(paras) if "#" in p), 0)
+    paras[idx] = f"{paras[idx].rstrip()} {tag_str}"
+    p0 = "\n\n".join(paras)
     return reply_link_parts(tier, label, [p0] + list(parts[1:])), entities_cache
 
 
