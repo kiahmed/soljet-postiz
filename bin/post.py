@@ -46,7 +46,7 @@ from src.lib.recipes import (
     recipe_sector_digest,
     recipe_single,
 )
-from src.lib.thread import split_for_thread
+from src.lib.thread import max_chars_for_channel, split_for_thread
 from src.lib.imagery import auto_media
 
 
@@ -270,9 +270,11 @@ def run_for_tier(tier, args) -> int:
             note = (" → attaches the card image" if pol == "attach"
                     else " → no media; platform renders the link card" if pol == "link_card"
                     else "")
+            ch_base_parts = bundle.parts or split_for_thread(
+                bundle.text, max_chars=max_chars_for_channel(label))
             ch_parts, entities_cache = channel_parts(
                 tier, label, source_type=bundle.source_type, source_id=bundle.source_id,
-                parts=parts, entities_cache=entities_cache)
+                parts=ch_base_parts, entities_cache=entities_cache)
             print(f"--- [{label}]  imagery: {pol}{note} ---")
             for i, p in enumerate(ch_parts, 1):
                 if len(ch_parts) > 1:
@@ -344,9 +346,11 @@ def run_for_tier(tier, args) -> int:
             client, tier, label, source_type=bundle.source_type,
             source_id=bundle.source_id, parts=parts, text=bundle.text,
             base_media=media, attach_cache=attach_cache)
+        ch_base_parts = bundle.parts or split_for_thread(
+            bundle.text, max_chars=max_chars_for_channel(label))
         ch_parts, entities_cache = channel_parts(
             tier, label, source_type=bundle.source_type,
-            source_id=bundle.source_id, parts=parts, entities_cache=entities_cache)
+            source_id=bundle.source_id, parts=ch_base_parts, entities_cache=entities_cache)
         print(f"  [{label}] imagery: {tier.imagery_policy.get(label.lower(),'legacy')} "
               f"→ {len(ch_media)} media")
         r = client.create_post(parts=ch_parts, integration_ids=[iid], mode=args.mode,
