@@ -153,6 +153,10 @@ Common keys: `_GCP_PROJECT`, `_COLLECTION`, `_AUTH="gcloud_adc"`, `_PATH`.
 | `IMAGERY_POLICY_X` | `link_card` (platform renders the card) |
 | `IMAGERY_POLICY_LINKEDIN` | `attach` (download og image + attach) |
 | `LET_PLATFORM_RENDER_LINK_CARD` | parent: let X render the link card |
+| `RENDER_GCS_PREFIX` | GCS prefix for rendered card PNGs (default `cards`) — `card_images.has_render()` |
+| `RENDER_GCS_GRAPH_PREFIX` | GCS prefix for the entity-subgraph PNG rendered alongside each card (default `graphs`) — `card_images.has_graph()`, same bucket, same freshness guarantee as the card render. See `docs/graph-posters.md`. |
+| `KG_GRAPH_URL_TEMPLATE` | `https://<sub>/graph-img/{card_id}.png` — image source for the standalone graph post (`bin/daily.py --kind graph`) |
+| `GRAPH_POST_LINKEDIN_ENABLED` / `GRAPH_POST_X_ENABLED` | per-channel kill switch for the graph post ONLY (default `true`; card-post schedule for that channel is untouched). Set to `"false"` to pull a channel without touching the live scheduler job — `bin/daily.py --kind graph` reads this and no-ops that channel. |
 
 **Tagging** (see linkedin-mentions.md)
 | Field | Meaning |
@@ -179,7 +183,11 @@ always targets one named tier; there is no "all tiers" sweep (`make post` with n
 tier is refused). `make check` is the tier-less overview.
 
 **Other knobs (combine freely):** `OLDEST=1` oldest-unposted instead of newest ·
-`CHANNEL=linkedin|x` one channel.
+`CHANNEL=linkedin|x` one channel · `KIND=card|graph` the catalyst-card post
+(default) or the standalone catalyst-graph post (`docs/graph-posters.md`) —
+a DIFFERENT post, own image, own posted-log/content-cache tracking, so
+running both kinds for the same tier never double-counts or skips one
+because the other already posted.
 
 ```bash
 # what would post next, one tier
@@ -189,6 +197,10 @@ make post-preview TIER=acme OLDEST=1 CHANNEL=linkedin
 # actually publish (same knobs)
 make post TIER=acme.robotics
 make post TIER=acme.robotics OLDEST=1 CHANNEL=linkedin
+
+# the standalone catalyst-graph post instead of the card
+make post-preview TIER=acme.robotics KIND=graph
+make post TIER=acme.robotics KIND=graph CHANNEL=linkedin
 
 # re-compose from scratch (discard the staged content_cache) then preview
 make regenerate TIER=acme
@@ -257,11 +269,13 @@ make scheduler-down        # local: remove the container
 ### 5.1 Frequency & volume — `ops/scheduler/channels.conf`
 
 Cadence is **config, not setup arguments**. One file holds it all — one row per
-channel (`channel | count | delay | tier | cron`):
+channel (`channel | count | delay | tier | kind | cron`):
 
 ```
-linkedin | 5 | 60m | arboryx.robotics | 0 6 * * *
-x        | 5 | 70m | arboryx.robotics | 30 8 * * *
+linkedin | 5 | 60m | arboryx.robotics | card  | 0 6 * * *
+x        | 5 | 70m | arboryx.robotics | card  | 30 8 * * *
+linkedin | 1 | 90   | arboryx.robotics | graph | 0 12 * * *
+x        | 1 | 90   | arboryx.robotics | graph | 30 13 * * *
 ```
 
 - `count` — cards posted per daily fire (X bills ~$0.20/post: cost dial).
@@ -269,8 +283,17 @@ x        | 5 | 70m | arboryx.robotics | 30 8 * * *
 - `tier`  — **required**; the one tier this row posts. A fire always targets
   exactly one tier — `make post` has no "all tiers" mode and refuses without a
   `TIER=`.
+- `kind`  — `card` (default; blank = card, kept for older rows) or `graph`
+  (the standalone catalyst-graph post, `docs/graph-posters.md`). A channel can
+  have BOTH a card row and a graph row — give the graph row its own cron time,
+  never reuse a card row's fire time.
 - `cron`  — when the run fires (5-field; TZ = `SCHEDULER_TZ` locally,
   `GCP_SCHEDULER_TZ` on GCP).
+
+To pull a channel from the graph schedule without touching the live scheduler
+job, set `GRAPH_POST_<CHANNEL>_ENABLED="false"` in that tier's `tier.config`
+(§3) instead of deleting/editing the row here — the row keeps firing, the run
+just no-ops for that channel.
 
 The values are *baked into the backend at apply time*, so **edits only take
 effect after re-applying**:
@@ -299,7 +322,9 @@ card PNGs). Each job POSTs the trigger sidecar through the Cloudflare tunnel.
    `SCHEDULER_TRIGGER_URL` hostname (e.g. `trigger.arboryx.ai`) →
    `http://postiz-scheduler-trigger:8090`.
 4. `make scheduler-up` — starts the trigger sidecar and creates one Cloud
-   Scheduler job per channels.conf row (`postiz-daily-linkedin`, `postiz-daily-x`).
+   Scheduler job per channels.conf row (`postiz-daily-linkedin`, `postiz-daily-x`;
+   a non-card `kind` row gets a `-<kind>` suffix, e.g. `postiz-daily-linkedin-graph`,
+   so existing card jobs are never renamed by adding a graph row).
 5. Verify: `make scheduler-run` fires every job now; `make scheduler-logs`
    shows Cloud Scheduler's view; the run itself logs to `data/daily.log`.
 
