@@ -73,7 +73,19 @@ fake_count() {  # CATCHUP_COUNTS="linkedin=2,x=0"
 }
 
 total=0
-sched_rows | while IFS=$'\t' read -r channel count delay tier cron; do
+sched_rows | while IFS=$'\t' read -r channel count delay tier kind cron; do
+  # published_today() counts ALL of a channel's PUBLISHED Postiz posts today —
+  # Postiz's own DB has no notion of our "kind" (card vs. graph), so once a
+  # channel has BOTH a card row and a graph row, that count can't tell which
+  # kind actually fired. Rather than do the due-vs-published math wrong (which
+  # could mask a genuinely missed graph fire behind that day's card posts),
+  # skip reconciliation for any non-card kind — it just won't self-heal after
+  # a host sleep/wake. Low-stakes today (graph is 1 fire/day): re-run by hand
+  # with `make post KIND=graph ...` if you notice one was missed.
+  if [ "${kind:-card}" != "card" ]; then
+    log "$channel/$kind: catch-up not kind-aware yet — skipping (see comment above)"
+    continue
+  fi
   # fires already due today: cron minute + hour list, compared to NOW
   cmin="$(echo "$cron" | awk '{print $1}')"
   hours="$(echo "$cron" | awk '{print $2}')"
