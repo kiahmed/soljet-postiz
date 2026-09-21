@@ -502,10 +502,12 @@ def compose_graph_stats(tier: Tier, stats: dict, *, sector: str = "",
     most-connected entity ALL-TIME (a raw count, no decay), and
     `fastest_accelerating_relationship` is the most common relationship TYPE
     in the last 14 days (a raw count, no baseline comparison) — the wording
-    below says exactly that, not "growth" or "acceleration" math the data
-    doesn't compute (yet — see docs/social-posting-strategy.md Part 2 §4,
-    catalyst-knowledge-graph's own graph_insights[] would be the real version
-    of this once built there).
+    below says exactly that, not "growth" or "acceleration" math these two
+    fields don't compute. catalyst-knowledge-graph's graph_insights[]
+    (src/detect.py §2.9a, shipped 2026-09-20) is the real, rate-normalised
+    version of this — see compose_graph_insight() below, which
+    recipe_graph_stats() now prefers whenever it's available; this function
+    remains the fallback for tiers/exports without it.
 
     Raises ValueError when `stats` has neither field — the caller
     (recipe_sector_digest) treats that as "nothing to post", not an error to
@@ -532,6 +534,36 @@ def compose_graph_stats(tier: Tier, stats: dict, *, sector: str = "",
     # hook applies, not compose_graph's per-card one. date=None -> _card_age_
     # days returns None -> _temporal_frame treats it as "recent" -> no
     # "Back in <when>:" prefix, correctly, since this is a live-now summary.
+    text, hook = _temporal_frame(draft, None, kind="finding")
+    body = _append_hashtags(text, tags, max_chars)
+    return f"{body}\n\n{hook}"
+
+
+def compose_graph_insight(tier: Tier, insight: dict, *, sector: str = "",
+                            max_chars: int = 280) -> str:
+    """The sharper 'state of the sector' post compose_graph_stats() docstring
+    anticipated: catalyst-knowledge-graph's graph_insights[] (src/detect.py
+    §2.9a), a comparative, rate-normalised claim like "NVIDIA: 12 partnerships
+    in 30 days (3.2x prior quarter)" instead of an all-time raw count.
+    DETERMINISTIC, no LLM — same contract every composer here holds.
+
+    `insight["headline"]` is already publish-ready per detect.py's own
+    contract ("a headline here IS published copy — it must be literally true
+    and specific") — quoted verbatim, never re-derived from the raw numbers.
+
+    Raises ValueError when `insight` has no headline — the caller
+    (recipe_graph_stats) treats that as "nothing to post", not an error to
+    surface to a reader."""
+    headline = insight.get("headline")
+    if not headline:
+        raise ValueError("compose_graph_insight: insight has no headline")
+
+    sec_label = f" {sector}" if sector else ""
+    draft = f"Sector signal{sec_label}:\n{headline}"
+
+    tags = _relevant_hashtags(sector, [])
+    # Same framing rationale as compose_graph_stats: no single card to
+    # visualize, and this is a live-now claim, not a "Back in <when>" one.
     text, hook = _temporal_frame(draft, None, kind="finding")
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"

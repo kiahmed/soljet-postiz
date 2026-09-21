@@ -74,3 +74,19 @@ class FirestoreCards(Source):
         except Exception:  # noqa: BLE001
             return {}
         return (snap.to_dict() or {}).get("stats", {}) if snap.exists else {}
+
+    def graph_insights(self) -> list[dict]:
+        """The sector's `graph_insights[]` (catalyst-knowledge-graph's
+        src/detect.py §2.9a) — same graph-projection doc as stats() above
+        (catalyst-knowledge-graph's firestore_export.py writes both `stats`
+        and `graph_insights` onto that one doc), so this is a second field
+        read off a doc we already fetch for stats(), not a new round trip
+        pattern. Same fail-closed contract: no stats_doc, a missing doc, or
+        a doc with no `graph_insights` field all degrade to []."""
+        if not self.stats_doc:
+            return []
+        try:
+            snap = self.client.document(self.stats_doc).get()
+        except Exception:  # noqa: BLE001
+            return []
+        return list((snap.to_dict() or {}).get("graph_insights", [])) if snap.exists else []

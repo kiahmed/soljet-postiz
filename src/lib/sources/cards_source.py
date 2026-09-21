@@ -71,3 +71,13 @@ class CardsJSON(Source):
         stats-less export degrades to "nothing to post", never an error."""
         data = self._load()
         return data.get("stats") or {} if isinstance(data, dict) else {}
+
+    def graph_insights(self) -> list[dict]:
+        """The export's top-level `graph_insights[]` (catalyst-knowledge-
+        graph's src/detect.py §2.9a — comparative, rate-normalised claims,
+        e.g. "NVIDIA: 12 partnerships in 30 days (3.2x prior quarter)").
+        Each entry's `headline` is already publish-ready per detect.py's own
+        contract. Used by recipe_graph_stats(), which prefers this over the
+        coarser stats() fields whenever it's non-empty. [] if absent."""
+        data = self._load()
+        return list(data.get("graph_insights") or []) if isinstance(data, dict) else []

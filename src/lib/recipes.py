@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .composer import (_llm_rewrite, _read_context, compose_catalyst, compose_finding,
-                       compose_graph, compose_graph_stats)
+                       compose_graph, compose_graph_insight, compose_graph_stats)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -200,32 +200,53 @@ def recipe_graph_stats(tier: Tier) -> PostBundle:
     recipe: top-N Firestore findings in a sector, LLM-summarized) — picked
     a distinct name specifically to avoid shadowing that existing function.
 
+    Prefers catalyst-knowledge-graph's graph_insights[] (src/detect.py
+    §2.9a, shipped 2026-09-20) when the source exposes a non-empty one —
+    a comparative, rate-normalised claim ("3.2x prior quarter") beats the
+    coarser all-time stats{} fields, exactly as compose_graph_stats()'s own
+    docstring anticipated. Falls back to stats{} when graph_insights[] is
+    absent/empty (e.g. SECTOR_STATS_DOC unset, or the sector's data is too
+    thin for any detector to fire) so this recipe keeps working unchanged
+    for tiers that haven't turned insights on yet.
+
     Raises KeyError (same "nothing to post" contract as every other recipe
-    here) when the tier's source doesn't expose stats() at all, or the stats
-    it returns have neither field compose_graph_stats needs — a stats-less
-    week just means no post that week, never a broken one."""
+    here) when the tier's source exposes neither a usable graph_insights[]
+    nor a usable stats{} — a data-less week just means no post that week,
+    never a broken one."""
     for ds in tier.sources:
         if ds.type not in ("cards_json", "firestore_cards"):
             continue
         src = build_source(ds, tier)
+        sector = tier.raw.get("SECTORS", "").split(",")[0].strip() or (
+            tier.id.split(".")[-1] if tier.parent_id else "")
+        week = datetime.now(timezone.utc).strftime("%G-W%V")
+        source_id = f"GRAPH-STATS-{tier.id}-{week}"
+
+        get_insights = getattr(src, "graph_insights", None)
+        insights = get_insights() if callable(get_insights) else []
+        if insights:
+            text = compose_graph_insight(tier, insights[0], sector=sector)
+            return PostBundle(
+                text=text,
+                source_type="graph_stats",
+                source_id=source_id,
+                context={"title": text.splitlines()[0][:120] if text else ""},
+            )
+
         get_stats = getattr(src, "stats", None)
         if not callable(get_stats):
             continue
         stats = get_stats() or {}
         if not stats.get("top_chokepoint_entity") and not stats.get("fastest_accelerating_relationship"):
             continue
-        sector = tier.raw.get("SECTORS", "").split(",")[0].strip() or (
-            tier.id.split(".")[-1] if tier.parent_id else "")
         text = compose_graph_stats(tier, stats, sector=sector)
-        week = datetime.now(timezone.utc).strftime("%G-W%V")
-        source_id = f"GRAPH-STATS-{tier.id}-{week}"
         return PostBundle(
             text=text,
             source_type="graph_stats",
             source_id=source_id,
             context={"title": text.splitlines()[0][:120] if text else ""},
         )
-    raise KeyError(f"tier '{tier.id}': no source exposes stats(), or stats has no usable fields")
+    raise KeyError(f"tier '{tier.id}': no source exposes graph_insights() or stats(), or neither has usable fields")
 
 
 # ---------- Simmer (Facades) — event-driven, deterministic templating ----------
