@@ -419,6 +419,23 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
         text = share.get("linkedin_text") or share.get("twitter_text") or headline
     text = re.sub(r"\s*https?://\S+\s*$", "", text).strip()  # drop trailing source link
 
+    # Hashtags are computed FIRST and their room is reserved before the
+    # mechanism clause is sized — otherwise a long mechanism sentence silently
+    # starves every hashtag candidate out of the budget with no fallback
+    # (_append_hashtags just skips a tag that doesn't fit, no warning). That
+    # regression shipped with the mechanism clause itself: most cards with a
+    # 100+ char mechanism lost ALL their hashtags, headline-only cards kept
+    # theirs — nobody noticed because the text still looked like a normal
+    # post, just without tags. Hashtags matter for reach; the mechanism
+    # clause is the one that yields room when both can't fit.
+    tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
+    tag_room = sum(len(t) + 1 for t in tags)  # +1 for the joining space
+    # _temporal_frame() may still prepend "Back in <when>: " (~15-25 chars)
+    # AFTER this point for an older card — reserve a safety margin for it so
+    # that prefix can't itself push a tight fit over budget and re-trigger
+    # the same silent drop one layer up.
+    _TEMPORAL_PREFIX_ROOM = 25
+
     # "Why it matters" — one verbatim sentence from the strongest relationship's
     # own `mechanism` field (docs/social-posting-strategy.md Part 2 §1: the
     # headline alone carries no reasoning; this is the field already sitting
@@ -426,11 +443,11 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
     # ever reads oddly at scale — default ON, matches "the data already
     # supports this" being the whole point.
     if str(tier.raw.get("MECHANISM_CLAUSE_ENABLED", "true")).strip().lower() != "false":
-        mech = _mechanism_clause(catalyst)
-        if mech:
-            text = f"{text}\n\n{mech}"
-
-    tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
+        mech_room = max_chars - len(text) - 2 - tag_room - _TEMPORAL_PREFIX_ROOM
+        if mech_room > 20:  # not worth a fragment shorter than this
+            mech = _mechanism_clause(catalyst, max_chars=min(220, mech_room))
+            if mech:
+                text = f"{text}\n\n{mech}"
 
     text, hook = _temporal_frame(
         text, catalyst.get("date"), card=catalyst,
