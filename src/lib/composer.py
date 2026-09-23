@@ -266,6 +266,13 @@ def _llm_rewrite(system_text: str, draft: str, *, max_chars: int = 280) -> str |
 # Named entities (companies) are the most specific/valuable tags; the per-sector
 # list below reliably tops us up to 2-3 when an item has few taggable entities.
 HASHTAG_TARGET = 3
+# CKG's per-card hashtags (topic/theme-aware, e.g. #AgTech, #Partnership) are
+# worth more room than our own entity+sector guess — a higher target ONLY
+# for that branch of _card_hashtags() so the fallback path (_relevant_
+# hashtags, no KG data) is untouched. _append_hashtags()'s per-tag length
+# check still drops anything that doesn't fit, so this never forces the
+# budget; it just raises the ceiling for the richer source.
+KG_HASHTAG_TARGET = 5
 _HASHTAG_RESERVE = 32  # chars kept back from the LLM budget so tags fit
 
 SECTOR_HASHTAGS = {
@@ -320,7 +327,8 @@ def _card_hashtags(card: dict, sector: str, entities: list[dict] | None,
     the field is absent/empty (older cards from before the KG's rollout)."""
     tags = card.get("hashtags") if isinstance(card, dict) else None
     if tags:
-        return list(tags[:n - 1]) + list(tags[-1:]) if len(tags) > n else list(tags)
+        kg_n = KG_HASHTAG_TARGET  # richer target for the KG's own tags only
+        return list(tags[:kg_n - 1]) + list(tags[-1:]) if len(tags) > kg_n else list(tags)
     return _relevant_hashtags(sector, entities, n)
 
 
