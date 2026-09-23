@@ -307,6 +307,23 @@ def _relevant_hashtags(sector: str, entities: list[dict] | None, n: int = HASHTA
     return out[:n]
 
 
+def _card_hashtags(card: dict, sector: str, entities: list[dict] | None,
+                   n: int = HASHTAG_TARGET) -> list[str]:
+    """Prefer catalyst-knowledge-graph's own per-catalyst `hashtags` field
+    (its src/hashtags.py, docs/graph-posters.md "Per-card hashtags") over our
+    own entity+sector derivation — it knows the card's topic (top
+    relationship type) and theme keywords from the headline/finding, neither
+    of which is available here. Priority-ordered [≤2 entity, 1 topic,
+    ≤2 theme, 1 sector-last]; take a prefix but always keep the LAST
+    (sector) tag so truncating a long list still lands a working fallback
+    tag instead of cutting it off. Falls back to _relevant_hashtags() when
+    the field is absent/empty (older cards from before the KG's rollout)."""
+    tags = card.get("hashtags") if isinstance(card, dict) else None
+    if tags:
+        return list(tags[:n - 1]) + list(tags[-1:]) if len(tags) > n else list(tags)
+    return _relevant_hashtags(sector, entities, n)
+
+
 def _append_hashtags(text: str, tags: list[str], max_chars: int) -> str:
     """Append each tag not already present, as long as it fits within max_chars."""
     out = text.rstrip()
@@ -428,7 +445,7 @@ def compose_catalyst(tier: Tier, catalyst: dict, related: list[dict], *, max_cha
     # theirs — nobody noticed because the text still looked like a normal
     # post, just without tags. Hashtags matter for reach; the mechanism
     # clause is the one that yields room when both can't fit.
-    tags = _relevant_hashtags(_sector_for(tier, catalyst), primary_entities(catalyst))
+    tags = _card_hashtags(catalyst, _sector_for(tier, catalyst), primary_entities(catalyst))
     tag_room = sum(len(t) + 1 for t in tags)  # +1 for the joining space
     # _temporal_frame() may still prepend "Back in <when>: " (~15-25 chars)
     # AFTER this point for an older card — reserve a safety margin for it so
@@ -499,7 +516,7 @@ def compose_graph(tier: Tier, catalyst: dict, related: list[dict], *, max_chars:
     lines.append(f"\n{outlook}")
     draft = "\n".join(lines)
 
-    tags = _relevant_hashtags(sector, primary_entities(catalyst))
+    tags = _card_hashtags(catalyst, sector, primary_entities(catalyst))
     text, hook = _temporal_frame(
         draft, catalyst.get("date"), card=catalyst,
         source_id=str(catalyst.get("card_id") or catalyst.get("id") or ""))
