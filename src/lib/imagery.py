@@ -232,7 +232,14 @@ def _matrix_snap(tier: Tier, bundle: PostBundle, ctx: dict) -> Path | None:
     if not url or not symbol:
         return None
     from .sources.matrix_source import STATE_VIEW
-    view = STATE_VIEW.get(card.get("state") or "", "engine_pick")
+    state = card.get("state") or ""
+    if state not in STATE_VIEW:
+        # No default view for a state with no crop yet (e.g. pick_result, as
+        # of 2026-09-22): defaulting to "engine_pick" would attach a
+        # screenshot of the CURRENT pick to a post about a different, already
+        # -closed one — worse than no image at all.
+        return None
+    view = STATE_VIEW[state]
     out = CACHE_DIR / f"matrix_snap_{_hash((bundle.source_id or symbol) + view)}.png"
     if out.is_file() and out.stat().st_size > 0:
         return out
