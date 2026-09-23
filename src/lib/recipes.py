@@ -575,10 +575,19 @@ def _pick_result_card(source_id: str, symbol: str, expiry: str | None,
     (result/entry_premium/exit_premium/favorable_delta/held_minutes) — see
     EdgeLane/docs/matrix_events_update.md "New state: pick_result"."""
     sym = (symbol or "").upper()
+    # EdgeLane's _pick_summary() (matrix_signals.py) only carries the pick's
+    # raw `strategy` slug ("bull_put") and `label` — NOT `short`/`name`, the
+    # fields matrix_source.py._to_card() prefers for the live pick_selected
+    # path. `label` on the top-level pick is a risk-style tag ("Aggressive"),
+    # not the strategy name — confirmed 2026-09-23 when a pick_result post
+    # read "$NDX — Aggressive won." instead of "$NDX — Bull Put won." So:
+    # humanize the slug ourselves rather than trust label as a display name.
+    raw_strategy = event_attrs.get("strategy") or ""
+    strategy_name = raw_strategy.replace("_", " ").title() if raw_strategy else None
     return {
         "card_id": source_id, "id": source_id, "symbol": sym, "state": "pick_result",
         "expiry": (str(expiry)[:10] if expiry else ""),
-        "strategy": event_attrs.get("label") or event_attrs.get("strategy"),
+        "strategy": strategy_name,
         "composite": event_attrs.get("composite_score"),
         "tags": [], "hint_text": None,
         "result": event_attrs.get("result"),
