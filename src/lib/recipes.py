@@ -471,6 +471,26 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
             bits = [f"${sym}'s win-eval grid: {wr:.0f}% win rate over {graded} graded trades on {strategy}."]
         else:
             bits = [f"${sym}'s win-eval grid just turned a corner on {strategy}."]
+    elif st == "pick_result":
+        # Reports how an announced pick actually closed — losses included on
+        # purpose (EdgeLane/docs/matrix_events_update.md: "a feed that only
+        # reports its wins is marketing"). No hint_text on this card (no live
+        # bias re-fetch for a closed run — see _pick_result_card), so this is
+        # the whole message, not a caveat tacked onto one.
+        result = (card.get("result") or "").lower()
+        verdict_word = {"win": "won", "loss": "lost"}.get(result, result or "closed")
+        bits = [f"${sym} — {strategy} {verdict_word}."]
+        entry = _fmt_num(card.get("entry_premium"), nd=2)
+        exit_ = _fmt_num(card.get("exit_premium"), nd=2)
+        if entry is not None and exit_ is not None:
+            bits.append(f"${entry} to ${exit_}.")
+        held = card.get("held_minutes")
+        try:
+            held_i = int(float(held))
+        except (TypeError, ValueError):
+            held_i = None
+        if held_i is not None:
+            bits.append(f"Held {held_i} min.")
     elif st == "session_open":
         walls = (card.get("walls") or {}).get("key_levels") or {}
         cw, pw = walls.get("call_wall"), walls.get("put_wall")
@@ -545,13 +565,53 @@ def _minimal_matrix_card(source_id: str, symbol: str, state: str | None,
     }
 
 
+def _pick_result_card(source_id: str, symbol: str, expiry: str | None,
+                      event_attrs: dict) -> dict:
+    """`pick_result` reports on a run that has already CLOSED — there is no
+    live API block for it (unlike pick_selected, which re-reads the CURRENT
+    pick), so the Pub/Sub event's own attributes are the only source of
+    truth. EdgeLane merges the original pick_selected summary
+    (strategy/label/composite_score/verdict/structure) with the result fields
+    (result/entry_premium/exit_premium/favorable_delta/held_minutes) — see
+    EdgeLane/docs/matrix_events_update.md "New state: pick_result"."""
+    sym = (symbol or "").upper()
+    return {
+        "card_id": source_id, "id": source_id, "symbol": sym, "state": "pick_result",
+        "expiry": (str(expiry)[:10] if expiry else ""),
+        "strategy": event_attrs.get("label") or event_attrs.get("strategy"),
+        "composite": event_attrs.get("composite_score"),
+        "tags": [], "hint_text": None,
+        "result": event_attrs.get("result"),
+        "entry_premium": event_attrs.get("entry_premium"),
+        "exit_premium": event_attrs.get("exit_premium"),
+        "favorable_delta": event_attrs.get("favorable_delta"),
+        "held_minutes": event_attrs.get("held_minutes"),
+        "headline": f"${sym} — Matrix pick result",
+        "entities": [{"name": sym, "x_handle": f"${sym}" if sym else None,
+                      "linkedin_handle": None}],
+        "url": f"https://matrix.facades.trade/?symbol={sym}",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+
 def recipe_matrix(tier: Tier, source_id: str, *, state: str | None = None,
-                  symbol: str | None = None, expiry: str | None = None) -> PostBundle:
+                  symbol: str | None = None, expiry: str | None = None,
+                  event_attrs: dict | None = None) -> PostBundle:
     """Matrix post for one symbol's state-change. `state` (from the Pub/Sub
     event) overrides whatever the API's current read implies. If the read-only
     API has no card for the ticker (KeyError — currently ALWAYS, until
     EdgeLane ships the endpoint), fall back to a minimal card from the event
-    attributes rather than dropping the post — `symbol` must then be given."""
+    attributes rather than dropping the post — `symbol` must then be given.
+
+    `pick_result` is a special case: it describes a CLOSED run, so there is
+    nothing to re-fetch live — the card is built straight from the event's
+    own attributes (`event_attrs`, the full normalized Pub/Sub message)
+    instead of calling the source at all."""
+    if state == "pick_result":
+        if not symbol:
+            raise ValueError("pick_result requires symbol")
+        return _matrix_bundle(tier, _pick_result_card(source_id, symbol, expiry,
+                                                        event_attrs or {}))
     src = build_source(tier.sources[0], tier)
     try:
         card = src.get(source_id)

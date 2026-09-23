@@ -254,7 +254,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
     card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat())
     try:
         bundle = recipe_matrix(tier, card_id, state=state,
-                               symbol=symbol, expiry=evt.get("expiry") or "")
+                               symbol=symbol, expiry=evt.get("expiry") or "",
+                               event_attrs=evt)
     except Exception as e:  # noqa: BLE001
         result["status"] = "error"
         result["reason"] = f"compose: {e}"
