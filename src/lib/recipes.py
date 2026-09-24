@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .composer import (_llm_rewrite, _read_context, compose_catalyst, compose_finding,
-                       compose_graph, compose_graph_insight, compose_graph_stats)
+from .composer import (_append_hashtags, _llm_rewrite, _read_context, compose_catalyst,
+                       compose_finding, compose_graph, compose_graph_insight,
+                       compose_graph_stats)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -426,6 +427,48 @@ def _matrix_grid_tags(entry: dict) -> list[str]:
     return tags
 
 
+# Deterministic, no-LLM hashtags (same rule as the rest of Matrix's copy — see
+# _MATRIX_TAG_CLAUSES) to reach the options/derivatives/fintech audience
+# rather than a general one. Credit vs debit is the one strategy-level fact
+# worth a tag: it's the first thing that audience filters on.
+_MATRIX_CORE_HASHTAGS = ["#Derivatives"]
+_MATRIX_CREDIT_STRATEGIES = {"bull put", "bear call", "iron condor", "iron fly"}
+_MATRIX_DEBIT_STRATEGIES = {"bull call", "bear put", "call fly", "put fly"}
+_MATRIX_STATE_HASHTAGS = {
+    "pick_selected": "#OptionsPremium",
+    "daily_recap": "#TrackRecord",
+    "pick_result": "#TrackRecord",
+    "bias_aligned": "#BiasDetection",
+    "bias_diverged": "#BiasDetection",
+    "win_rate_notable": "#TrackRecord",
+    "session_open": "#GammaWalls",
+    "grid_digest": "#OptionsStrategy",
+}
+
+
+def _matrix_hashtags(st: str, strategy: str | None) -> list[str]:
+    """~3 tags, same target as composer.py's HASHTAG_TARGET convention: one
+    core fintech/derivatives tag, one for the strategy's credit/debit shape
+    (skipped when strategy is the "a setup" fallback — nothing real to tag),
+    one for the post moment (bias/walls/track-record/etc.)."""
+    tags = list(_MATRIX_CORE_HASHTAGS)
+    s = (strategy or "").strip().lower()
+    if s in _MATRIX_CREDIT_STRATEGIES:
+        tags.append("#CreditSpread")
+    elif s in _MATRIX_DEBIT_STRATEGIES:
+        tags.append("#DebitSpread")
+    state_tag = _MATRIX_STATE_HASHTAGS.get(st)
+    if state_tag:
+        tags.append(state_tag)
+    seen, out = set(), []
+    for t in tags:
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
 def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     """Deterministic post text from Matrix engine state. No LLM — same rule as
     compose_simmer(): the numbers and tags ARE the message.
@@ -518,6 +561,7 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     bits.append("A snapshot of engine state, not advice.")
 
     text = " ".join(b for b in bits if b)
+    text = _append_hashtags(text, _matrix_hashtags(st, strategy), max_chars)
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     return text
