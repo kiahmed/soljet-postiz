@@ -15,6 +15,7 @@ from .handles import resolve_handle
 from .imagery import auto_media
 from .recipes import PostBundle
 from .sources.factory import build_source
+from .thread import max_chars_for_channel
 
 _URL_RE = re.compile(r"https?://\S+")
 
@@ -228,21 +229,44 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
     the hashtags instead of after. parts[0] also has a hook paragraph and (if a
     deep link was appended) a link paragraph AFTER the hashtags, so anchoring
     on "last paragraph" is equally wrong — hence finding the hashtag paragraph
-    itself rather than guessing a fixed position. Returns (parts,
-    entities_cache) — entities_cache memoizes the subject-entity lookup
-    across channels."""
+    itself rather than guessing a fixed position.
+
+    parts[0] already arrived pre-sized to the channel's limit (split_for_
+    thread ran before this). Tags are added ONE AT A TIME, only if the result
+    still fits that same limit — otherwise a tag pushes an already-at-budget
+    X part over 280 and X rejects the whole post with "post is too long"
+    (real incident: a 256-char part + " @SchaefflerGroup @HexagonAB" landed
+    at 284). LinkedIn's 3000-char ceiling means this never bites there; the
+    per-tag check just costs nothing when there's plenty of headroom.
+
+    X's own HTML round-trip inflates a `\n\n` paragraph break into extra
+    blank lines somewhere in Postiz's editor pipeline (LinkedIn doesn't show
+    this) — collapse to a single `\n` for X specifically rather than try to
+    fix a third party's converter.
+
+    Returns (parts, entities_cache) — entities_cache memoizes the subject-
+    entity lookup across channels."""
     if entities_cache is None:
         entities_cache = _entities_for(tier, source_type, source_id)
     ctx = _ctx_cache.get(source_id, "")
     tags = entity_tags(tier, label, entities_cache, context=ctx) if entities_cache else []
-    if not tags or not parts:
-        return reply_link_parts(tier, label, parts), entities_cache
-    tag_str = " ".join(tags)
-    paras = parts[0].split("\n\n")
-    idx = next((i for i, p in enumerate(paras) if "#" in p), 0)
-    paras[idx] = f"{paras[idx].rstrip()} {tag_str}"
-    p0 = "\n\n".join(paras)
-    return reply_link_parts(tier, label, [p0] + list(parts[1:])), entities_cache
+    p0 = parts[0] if parts else ""
+    if tags and parts:
+        limit = max_chars_for_channel(label)
+        paras = p0.split("\n\n")
+        idx = next((i for i, p in enumerate(paras) if "#" in p), 0)
+        fitted: list[str] = []
+        for t in tags:
+            candidate_len = len(p0) + sum(len(x) + 1 for x in fitted + [t])
+            if candidate_len <= limit:
+                fitted.append(t)
+        if fitted:
+            paras[idx] = f"{paras[idx].rstrip()} {' '.join(fitted)}"
+            p0 = "\n\n".join(paras)
+    new_parts = ([p0] + list(parts[1:])) if parts else parts
+    if label.upper() == "X":
+        new_parts = [re.sub(r"\n{2,}", "\n", p) for p in new_parts]
+    return reply_link_parts(tier, label, new_parts), entities_cache
 
 
 def reply_link_parts(tier, label: str, parts: list[str]) -> list[str]:
