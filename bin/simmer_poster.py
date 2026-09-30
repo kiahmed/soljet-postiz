@@ -45,8 +45,9 @@ from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.imagery import auto_media  # noqa: E402
 from src.lib.market_hours import is_market_open, market_hours_enforced  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
-from src.lib.recipes import recipe_simmer  # noqa: E402
+from src.lib.recipes import recipe_simmer, _simmer_bundle  # noqa: E402
 from src.lib.sources.simmer_source import make_card_id  # noqa: E402
+from src.lib.sources.simmer_ledger import LedgerClient, card_from_row  # noqa: E402
 from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
 from src.lib import posted_log  # noqa: E402
 
@@ -179,15 +180,63 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         result["key"] = k
         return result
 
+    # Keep the ledger rolling: drop rows older than 1 day. The exactly-once id is
+    # scoped to a UTC day, so a day-old floor never prunes a live dedupe key.
+    # Cheap, idempotent, never fatal.
+    ledger = LedgerClient()
+    if ledger.enabled:
+        try:
+            pruned = ledger.prune_stale()
+            if pruned:
+                _log("ledger_pruned", rows=pruned)
+        except Exception as e:  # noqa: BLE001
+            _log("ledger_prune_failed", error=str(e)[:200])
+
     card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat(), evt.get("expiry") or "")
-    try:
-        bundle = recipe_simmer(tier, card_id, state=state, symbol=symbol,
-                               expiry=evt.get("expiry") or "",
-                               off_hours_catalyst=(not market_open and off_hours_catalyst))
-    except Exception as e:  # noqa: BLE001
-        result["status"] = "error"
-        result["reason"] = f"compose: {e}"
-        return result
+    event_id = str(evt.get("event_id") or "")
+    claimed = False
+    if str(evt.get("ledger") or "") == "1":
+        # Everything this post needs was frozen by the engine at event time —
+        # the data blocks and the card's HTML. Read it from the ledger; never
+        # call back into EdgeLane. A dry-run PEEKS (a claim would block the real
+        # run from posting it).
+        if not ledger.enabled:
+            result["status"] = "error"
+            result["reason"] = ("ledger event but SUPABASE_URL/SUPABASE_ANON_KEY/"
+                                "SIMMER_LEDGER_TOKEN unset")
+            return result
+        worker = os.getenv("K_REVISION") or os.getenv("HOSTNAME") or "simmer-poster"
+        try:
+            row = ledger.peek(event_id) if dry_run else ledger.claim(event_id, worker)
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"ledger: {str(e)[:200]}"
+            return result
+        if not row:
+            result["reason"] = "no ledger row (already posted, held by another worker, or pruned)"
+            return result
+        claimed = not dry_run
+        try:
+            bundle = _simmer_bundle(tier, card_from_row(row, card_id))
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"compose: {e}"
+            return result
+        result["source"] = "ledger"
+    else:
+        # Legacy: an event published before the ledger existed — re-reads
+        # /simmer/state live. Kept only so any in-flight pre-cutover message
+        # still posts.
+        _log("legacy_callback", symbol=symbol, state=state, event_id=event_id)
+        try:
+            bundle = recipe_simmer(tier, card_id, state=state, symbol=symbol,
+                                   expiry=evt.get("expiry") or "",
+                                   off_hours_catalyst=(not market_open and off_hours_catalyst))
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"compose: {e}"
+            return result
+        result["source"] = "legacy_api"
     if (bundle.context or {}).get("card", {}).get("_enrich") == "minimal":
         _log("enrich_minimal", symbol=symbol, state=state,
              note="read-only API had no card — posting from event attributes only")
@@ -262,6 +311,15 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
                                integration_ids=[i for i in iids],
                                response={"channels": posted_channels})
         dedupe.mark(k, {"symbol": symbol, "state": state, "card_id": card_id, "mode": mode})
+        if claimed:
+            # Posted — clear the payload but KEEP the event_id row as the
+            # exactly-once tombstone (§3), so a same-UTC-day re-fire can't
+            # insert a fresh row and re-publish. prune drops it after a day.
+            try:
+                ledger.done(event_id)
+                _log("ledger_done", event_id=event_id)
+            except Exception as e:  # noqa: BLE001
+                _log("ledger_done_failed", event_id=event_id, error=str(e)[:200])
     result["status"] = "posted" if ok else "error"
     result["result_channels"] = posted_channels
     return result

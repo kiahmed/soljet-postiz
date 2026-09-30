@@ -54,8 +54,14 @@ def healthz() -> Response:
 def snap() -> Response:
     body = request.get_json(force=True, silent=True) or {}
     symbol = str(body.get("symbol") or "").upper()
-    if not symbol:
-        return jsonify({"error": "symbol required"}), 400
+    # Ledger path (preferred): the poster sends the card's HTML exactly as
+    # EdgeLane froze it at event time (simmer_event_ledger). We render THAT with
+    # set_content — no call back into EdgeLane, and no chance of photographing a
+    # later state than the event is about. Legacy path (no html): load
+    # /simmer/snap live.
+    html = body.get("html") if isinstance(body.get("html"), str) else ""
+    if not symbol and not html:
+        return jsonify({"error": "symbol or html required"}), 400
     url = f"{API_BASE}/simmer/snap/{symbol}"
     vw, vh = (int(x) for x in VIEWPORT.split("x"))
     t0 = time.time()
@@ -64,9 +70,18 @@ def snap() -> Response:
         with sync_playwright() as p:
             browser = p.chromium.launch(args=["--no-sandbox"])
             page = browser.new_page(viewport={"width": vw, "height": vh}, device_scale_factor=2)
-            if API_TOKEN:
-                page.set_extra_http_headers({"Authorization": f"Bearer {API_TOKEN}"})
-            resp = page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
+            if html:
+                # The card is self-contained (inline CSS, no scripts, no
+                # assets), so it needs no network — abort every request rather
+                # than let stored HTML reach anything.
+                page.route("**/*", lambda route: route.abort())
+                page.set_content(html, wait_until="load", timeout=TIMEOUT_MS)
+                url = "ledger:html"
+                resp = None
+            else:
+                if API_TOKEN:
+                    page.set_extra_http_headers({"Authorization": f"Bearer {API_TOKEN}"})
+                resp = page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
             # A 404/500 from the render endpoint (e.g. a bad symbol) is still
             # a "successful" navigation as far as Playwright is concerned —
             # goto() doesn't raise on it. Left unchecked, the selector-wait

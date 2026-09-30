@@ -193,11 +193,18 @@ def _simmer_snap(tier: Tier, bundle: PostBundle, ctx: dict) -> Path | None:
     out = CACHE_DIR / f"simmer_snap_{_hash(bundle.source_id or symbol)}.png"
     if out.is_file() and out.stat().st_size > 0:
         return out
-    body = json.dumps({
+    payload = {
         "symbol": symbol,
         "expiry": card.get("expiry") or "",
         "state": card.get("state") or "",
-    }).encode("utf-8")
+    }
+    # Ledger path: EdgeLane froze the card's HTML at event time. The snap service
+    # renders THAT with set_content (no callback into EdgeLane, no chance of
+    # photographing a later state). Legacy path (no html): it loads /simmer/snap.
+    html = card.get("_snap_html") or ""
+    if html:
+        payload["html"] = html
+    body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "User-Agent": "simmer-poster/1.0"}
     try:
         from .sources.simmer_source import _oidc_token

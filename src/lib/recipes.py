@@ -280,21 +280,27 @@ def compose_simmer(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     em = _fmt_num(m.get("em_1sd"), nd=1)
     news = card.get("sentiment") or {}
     news_score = _fmt_num(news.get("score"), nd=2, plus=True)
+    # A delayed / redelivered event (ledger event_at older than the threshold)
+    # must not claim a name "is ready" now: past-tense it and drop the
+    # forward-looking line (docs/simmer_events_update.md §7).
+    past = bool(card.get("_past"))
 
     bits: list[str]
     if st == "ready":
-        bits = [f"${sym} is ready to serve."]
+        bits = [f"${sym} was ready to serve." if past else f"${sym} is ready to serve."]
         if iv or vrp:
             bits.append("IV pct " + (iv or "n/a") + (f", VRP {vrp}" if vrp else "") + ".")
         if em:
-            bits.append(f"Short strikes sit outside the GEX wall and the 1-SD move (±{em}).")
+            sat = "sat" if past else "sit"
+            bits.append(f"Short strikes {sat} outside the GEX wall and the 1-SD move (±{em}).")
         if expiry:
             bits.append(f"Expiry {expiry}.")
         if news_score:
             bits.append(f"News read {news_score}.")
-        bits.append("A snapshot of engine state, not advice.")
+        bits.append("A snapshot from when the engine flagged it, not advice." if past
+                    else "A snapshot of engine state, not advice.")
     else:  # watch_entered / simmering
-        bits = [f"${sym} just went on the stove."]
+        bits = [f"${sym} went on the stove." if past else f"${sym} just went on the stove."]
         seg = []
         if iv:
             seg.append(f"IV pct {iv}")
@@ -304,7 +310,8 @@ def compose_simmer(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
             seg.append(f"expected move ±{em}")
         if seg:
             bits.append(", ".join(seg) + (f" into {expiry}." if expiry else "."))
-        bits.append("Watching the gates — we'll say when it's ready.")
+        if not past:
+            bits.append("Watching the gates — we'll say when it's ready.")
 
     if card.get("_off_hours_catalyst"):
         bits.append("Alert generated while markets were closed, based on a "
