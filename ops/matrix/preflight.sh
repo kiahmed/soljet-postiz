@@ -94,7 +94,14 @@ for pair in "$SECRET_POSTIZ:shared Postiz API key" "$SECRET_TOKEN:${PRODUCT} rea
   fi
 done
 
-# ── 5. Pub/Sub ──────────────────────────────────────────────────────────
+# ── 5. Matrix ledger env (required for the ledger read path) ────────────
+section "ledger env"
+SUPA_URL="$(envget SUPABASE_URL)"
+SUPA_ANON="$(envget SUPABASE_ANON_KEY)"
+[ -n "$SUPA_URL" ] && ok "SUPABASE_URL set" || bad "SUPABASE_URL set" "set in .env — deploy_poster now fails fast on this too, but catch it here first"
+[ -n "$SUPA_ANON" ] && ok "SUPABASE_ANON_KEY set" || bad "SUPABASE_ANON_KEY set" "set in .env — deploy_poster now fails fast on this too, but catch it here first"
+
+# ── 6. Pub/Sub ──────────────────────────────────────────────────────────
 section "pub/sub"
 if gcq pubsub topics describe "$TOPIC" --format='value(name)' >/dev/null; then ok "topic $TOPIC"; else bad "topic $TOPIC" "make ${PRODUCT}-deploy PART=--sa-only  (or EdgeLane's provisioner)"; fi
 if gcq pubsub subscriptions describe "$SUB" --format='value(name)' >/dev/null; then
@@ -112,7 +119,7 @@ fi
 gcq pubsub subscriptions describe "${SUB}-local" --format='value(name)' >/dev/null \
   && ok "subscription ${SUB}-local" "local pull test sub" || true
 
-# ── 6. Cloud Run services ──────────────────────────────────────────────
+# ── 7. Cloud Run services ──────────────────────────────────────────────
 section "cloud run"
 for svc in "$SNAP_SVC" "$POSTER_SVC"; do
   url="$(gcloud run services describe "$svc" --project="$PROJECT" --region="$REGION" --format='value(status.url)' 2>/dev/null)"
@@ -128,7 +135,7 @@ for svc in "$SNAP_SVC" "$POSTER_SVC"; do
   fi
 done
 
-# ── 7. tier config + .env ─────────────────────────────────────────────
+# ── 8. tier config + .env ─────────────────────────────────────────────
 section "tier / .env"
 "$PY" "$DIR/preflight_tier.py" "$PRODUCT" || fails=$((fails+1))
 

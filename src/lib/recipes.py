@@ -485,35 +485,41 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     composite = _fmt_num(card.get("composite"), nd=1)
     clause = _matrix_tag_clause(card.get("tags") or [])
     hint = (card.get("hint_text") or "").strip()
+    # An event that has already happened is reported as such. The ledger
+    # (EdgeLane matrix_event_ledger) freezes each event at the moment the engine
+    # saw it; if we're posting it later — a delayed or redelivered message, or a
+    # state that is inherently about the past — present tense would claim it is
+    # happening now. A past event also drops the live hint ("wait for a
+    # confirming win…"): that is advice about NOW, not about then.
+    past = bool(card.get("_past"))
+    if past:
+        hint = ""
 
     bits: list[str]
     if st == "daily_recap":
-        bits = [f"Best setup today on ${sym}: {strategy}"
+        # Best only — the recap is a showcase. (It used to add a "Weakest:" line
+        # read from the CURRENT grid, which by recap time is the next session's.)
+        day = card.get("session_date")
+        when = f"on {day}" if day else "today"
+        bits = [f"Best setup {when} on ${sym}: {strategy}"
                 + (f" (composite {composite})" if composite else "") + "."]
         if clause:
             bits.append(clause.capitalize() + ".")
-        grid = card.get("grid") or {}
-        if grid:
-            worst_key = min(grid, key=lambda k: grid[k].get("composite_score", 999) or 999)
-            worst = grid[worst_key] or {}
-            w_label = worst.get("label") or worst_key.replace("_", " ").title()
-            w_score = _fmt_num(worst.get("composite_score"), nd=1)
-            w_clause = _matrix_tag_clause(_matrix_grid_tags(worst))
-            line = f"Weakest: {w_label}" + (f" (composite {w_score})" if w_score else "") + "."
-            if w_clause:
-                line += f" {w_clause.capitalize()}."
-            bits.append(line)
     elif st == "bias_aligned":
-        bits = [f"${sym} — the bias read now agrees with the engine's pick ({strategy})."]
+        verb = "agreed" if past else "now agrees"
+        bits = [f"${sym} — the bias read {verb} with the engine's pick ({strategy})."]
     elif st == "bias_diverged":
-        bits = [f"${sym} — the bias read is diverging from the engine's pick ({strategy})."]
+        verb = "diverged" if past else "is diverging"
+        bits = [f"${sym} — the bias read {verb} from the engine's pick ({strategy})."]
     elif st == "win_rate_notable":
         wr = card.get("win_rate")
         graded = card.get("graded")
         if wr is not None and graded:
-            bits = [f"${sym}'s win-eval grid: {wr:.0f}% win rate over {graded} graded trades on {strategy}."]
+            had = "had" if past else "at"
+            bits = [f"${sym}'s win-eval grid {had} {float(wr):.0f}% win rate over {graded} graded picks on {strategy}."]
         else:
-            bits = [f"${sym}'s win-eval grid just turned a corner on {strategy}."]
+            turned = "turned" if past else "just turned"
+            bits = [f"${sym}'s win-eval grid {turned} a corner on {strategy}."]
     elif st == "pick_result":
         # Reports how an announced pick actually closed — losses included on
         # purpose (EdgeLane/docs/matrix_events_update.md: "a feed that only
@@ -538,7 +544,8 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
         walls = (card.get("walls") or {}).get("key_levels") or {}
         cw, pw = walls.get("call_wall"), walls.get("put_wall")
         if cw is not None or pw is not None:
-            bits = [f"${sym} — today's walls: call {_fmt_num(cw, nd=0) or cw}, "
+            lead = "the session opened with walls at" if past else "today's walls:"
+            bits = [f"${sym} — {lead} call {_fmt_num(cw, nd=0) or cw}, "
                     f"put {_fmt_num(pw, nd=0) or pw}."]
         else:
             bits = [f"${sym} — today's session open."]
@@ -548,12 +555,13 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
         tradeable = sum(1 for v in grid.values()
                         if (v.get("composite_verdict") or {}).get("mode") not in (None, "skip", "wait"))
         if n:
-            bits = [f"This week's strategy grid for ${sym} — {n} setups scored, {tradeable} tradeable."]
+            were = " were" if past else ""
+            bits = [f"This week's strategy grid for ${sym} — {n} setups scored, {tradeable}{were} tradeable."]
         else:
             bits = [f"This week's strategy grid for ${sym} — a look at all the setups."]
     else:  # pick_selected (default)
-        bits = [f"${sym} — engine pick: {strategy}"
-                + (f". Composite {composite}" if composite else "") + "."]
+        lead = f"${sym} — the engine picked {strategy}" if past else f"${sym} — engine pick: {strategy}"
+        bits = [lead + (f". Composite {composite}" if composite else "") + "."]
         if clause:
             bits.append(clause.capitalize() + ".")
     if hint:

@@ -17,8 +17,12 @@ this on a hardcoded holiday table now.
 """
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
+
+log = logging.getLogger(__name__)
 
 _TZ = ZoneInfo("America/New_York")
 _OPEN = time(9, 30)
@@ -42,4 +46,17 @@ def market_hours_enforced(tier) -> bool:
     """Tier-config escape hatch (`MARKET_HOURS_ENFORCED`, default true) so the
     gate can be turned off — local testing outside market hours, or a product
     that decides it doesn't want this gate at all."""
-    return str(tier.raw.get("MARKET_HOURS_ENFORCED", "true")).strip().lower() != "false"
+    # An env var wins over the tier file, so a no-traffic TEST revision on Cloud
+    # Run can switch the gate off without shipping a different tier config (the
+    # config is baked into the image).
+    env_raw = os.environ.get("MARKET_HOURS_ENFORCED")
+    raw = env_raw or tier.raw.get("MARKET_HOURS_ENFORCED", "true")
+    enforced = str(raw).strip().lower() != "false"
+    if env_raw is not None and not enforced:
+        # Loud on purpose: this must never be true on a live revision (that
+        # no-traffic TEST-revision use case above is the only reason it
+        # exists), and an env var silently overriding the tier config is
+        # exactly the kind of thing that should not fail quietly.
+        log.warning("market-hours gate DISABLED by env (MARKET_HOURS_ENFORCED=%r) — "
+                    "this must never be set on a live revision", env_raw)
+    return enforced

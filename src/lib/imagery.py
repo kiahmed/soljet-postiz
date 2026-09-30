@@ -233,22 +233,32 @@ def _matrix_snap(tier: Tier, bundle: PostBundle, ctx: dict) -> Path | None:
         return None
     from .sources.matrix_source import STATE_VIEW
     state = card.get("state") or ""
-    if state not in STATE_VIEW:
-        # No default view for a state with no crop yet (e.g. pick_result, as
-        # of 2026-09-22): defaulting to "engine_pick" would attach a
-        # screenshot of the CURRENT pick to a post about a different, already
-        # -closed one — worse than no image at all.
+    html = card.get("_snap_html") or ""
+    if html:
+        # Ledger path: EdgeLane froze the card's HTML at the moment of the event
+        # (including pick_result / daily_recap, carded from THAT pick). The snap
+        # service renders it as-is — it never calls back into EdgeLane.
+        view = card.get("_snap_view") or STATE_VIEW.get(state) or "engine_pick"
+    elif state in STATE_VIEW:
+        view = STATE_VIEW[state]          # legacy: snap service loads /matrix/snap
+    else:
+        # No stored HTML and no live crop for this state (e.g. pick_result):
+        # defaulting to "engine_pick" would attach the CURRENT pick to a post
+        # about a different, already-closed one — worse than no image.
         return None
-    view = STATE_VIEW[state]
-    out = CACHE_DIR / f"matrix_snap_{_hash((bundle.source_id or symbol) + view)}.png"
+    key = (card.get("event_id") or bundle.source_id or symbol) + view
+    out = CACHE_DIR / f"matrix_snap_{_hash(key)}.png"
     if out.is_file() and out.stat().st_size > 0:
         return out
-    body = json.dumps({
+    payload = {
         "symbol": symbol,
         "expiry": card.get("expiry") or "",
         "state": card.get("state") or "",
         "view": view,
-    }).encode("utf-8")
+    }
+    if html:
+        payload["html"] = html
+    body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "User-Agent": "matrix-poster/1.0"}
     try:
         from .sources.simmer_source import _oidc_token  # shared OIDC helper

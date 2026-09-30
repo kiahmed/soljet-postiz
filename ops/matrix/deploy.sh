@@ -82,6 +82,9 @@ SUB="${PRODUCT}-poster-sub"
 SECRET_POSTIZ="${POSTIZ_API_KEY_SECRET:-$(envget POSTIZ_API_KEY_SECRET)}"
 SECRET_POSTIZ="${SECRET_POSTIZ:-postiz-api-key}"
 SECRET_TOKEN="${PRODUCT}-api-token"
+# Ledger-only token for EdgeLane's matrix_event_ledger (NOT the Supabase service
+# key — that one can decrypt users' broker tokens). Created by EdgeLane.
+SECRET_LEDGER="${PRODUCT}-ledger-token"
 
 run(){ if [ "${DRY:-}" = 1 ]; then printf '  + %s\n' "$*"; else "$@"; fi; }
 gc(){ run gcloud "$@" --project="$PROJECT"; }
@@ -115,8 +118,8 @@ ensure_sa(){
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/datastore.user" \
     --condition=None
 
-  # Secrets: the shared Postiz key + this product's API token.
-  for s in "$SECRET_POSTIZ" "$SECRET_TOKEN"; do
+  # Secrets: the shared Postiz key + this product's API token + ledger token.
+  for s in "$SECRET_POSTIZ" "$SECRET_TOKEN" "$SECRET_LEDGER"; do
     gc secrets add-iam-policy-binding "$s" \
       --member="serviceAccount:${RUNTIME_SA}" \
       --role="roles/secretmanager.secretAccessor" 2>/dev/null \
@@ -190,13 +193,23 @@ deploy_poster(){
     v="$(envget "$k")"; [ -n "$v" ] && chan_env="${chan_env},${k}=${v}"
   done
 
+  local supabase_url supabase_anon
+  supabase_url="$(envget SUPABASE_URL)"
+  supabase_anon="$(envget SUPABASE_ANON_KEY)"
+  if [ -z "$supabase_url" ] || [ -z "$supabase_anon" ]; then
+    echo "   ! SUPABASE_URL/SUPABASE_ANON_KEY missing from .env — the ledger" >&2
+    echo "     read path would deploy with them empty and only error at" >&2
+    echo "     runtime (\"ledger event but SUPABASE_URL/... unset\"). Set both first." >&2
+    exit 1
+  fi
+
   gc run deploy "$POSTER_SVC" --region="$REGION" \
     --image="$img" \
     --no-allow-unauthenticated \
     --service-account="$RUNTIME_SA" \
     --memory=512Mi --cpu=1 --timeout=120 \
-    --set-env-vars="GCP_PROJECT=${PROJECT},MATRIX_PUBSUB_SUBSCRIPTION=${SUB},MATRIX_API_BASE=https://edge.facades.trade,MATRIX_SNAP_URL=${snap_url}/snap,POSTIZ_API_URL=https://dev.arboryx.ai,MATRIX_DEDUPE_COLLECTION=${PRODUCT}_poster_dedupe${chan_env}" \
-    --set-secrets="POSTIZ_API_KEY=${SECRET_POSTIZ}:latest,MATRIX_API_TOKEN=${SECRET_TOKEN}:latest"
+    --set-env-vars="GCP_PROJECT=${PROJECT},MATRIX_PUBSUB_SUBSCRIPTION=${SUB},MATRIX_API_BASE=https://edge.facades.trade,MATRIX_SNAP_URL=${snap_url}/snap,POSTIZ_API_URL=https://dev.arboryx.ai,MATRIX_DEDUPE_COLLECTION=${PRODUCT}_poster_dedupe,SUPABASE_URL=${supabase_url},SUPABASE_ANON_KEY=${supabase_anon}${chan_env}" \
+    --set-secrets="POSTIZ_API_KEY=${SECRET_POSTIZ}:latest,MATRIX_API_TOKEN=${SECRET_TOKEN}:latest,MATRIX_LEDGER_TOKEN=${SECRET_LEDGER}:latest"
   # Pub/Sub push (auth as RUNTIME_SA) invokes the poster:
   gc run services add-iam-policy-binding "$POSTER_SVC" --region="$REGION" \
     --member="serviceAccount:${RUNTIME_SA}" --role="roles/run.invoker"

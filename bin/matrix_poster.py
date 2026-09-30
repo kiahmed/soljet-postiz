@@ -55,7 +55,8 @@ from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.imagery import auto_media  # noqa: E402
 from src.lib.market_hours import is_market_open, market_hours_enforced  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
-from src.lib.recipes import recipe_matrix  # noqa: E402
+from src.lib.recipes import _matrix_bundle, recipe_matrix  # noqa: E402
+from src.lib.sources.matrix_ledger import LedgerClient, card_from_row  # noqa: E402
 from src.lib.sources.matrix_source import make_card_id  # noqa: E402
 from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
 from src.lib import posted_log  # noqa: E402
@@ -251,15 +252,66 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         result["key"] = k
         return result
 
-    card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat())
-    try:
-        bundle = recipe_matrix(tier, card_id, state=state,
-                               symbol=symbol, expiry=evt.get("expiry") or "",
-                               event_attrs=evt)
-    except Exception as e:  # noqa: BLE001
-        result["status"] = "error"
-        result["reason"] = f"compose: {e}"
+    # Wins only (owner decision, 2026-09-29). A loss is not claimed here, so its
+    # ledger row stays put for the separate loss-post feature (see EdgeLane
+    # docs/matrix_events_update.md) instead of being consumed by this path.
+    if state == "pick_result" and str(evt.get("result") or "").lower() != "win":
+        result["reason"] = "pick_result is a loss — wins only"
         return result
+
+    # Keep the ledger rolling: Matrix posts are about TODAY's session, so rows
+    # from before today (ET) are dropped. Cheap, idempotent, never fatal.
+    ledger = LedgerClient()
+    if ledger.enabled:
+        try:
+            pruned = ledger.prune_before_today()
+            if pruned:
+                _log("ledger_pruned", rows=pruned)
+        except Exception as e:  # noqa: BLE001
+            _log("ledger_prune_failed", error=str(e)[:200])
+
+    card_id = make_card_id(symbol, datetime.now(timezone.utc).isoformat())
+    event_id = str(evt.get("event_id") or "")
+    claimed = False
+    if str(evt.get("ledger") or "") == "1":
+        # Everything this post needs was frozen by the engine at event time —
+        # data and the card's HTML. Read it from the ledger; never call back
+        # into EdgeLane. A dry-run PEEKS (a claim would block the real run).
+        if not ledger.enabled:
+            result["status"] = "error"
+            result["reason"] = "ledger event but SUPABASE_URL/SUPABASE_ANON_KEY/MATRIX_LEDGER_TOKEN unset"
+            return result
+        worker = os.getenv("K_REVISION") or os.getenv("HOSTNAME") or "matrix-poster"
+        try:
+            row = ledger.peek(event_id) if dry_run else ledger.claim(event_id, worker)
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"ledger: {str(e)[:200]}"
+            return result
+        if not row:
+            result["reason"] = "no ledger row (already posted, held by another worker, or pruned)"
+            return result
+        claimed = not dry_run
+        try:
+            bundle = _matrix_bundle(tier, card_from_row(row, card_id))
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"compose: {e}"
+            return result
+        result["source"] = "ledger"
+    else:
+        # Legacy: an event published before the ledger existed. Re-reads
+        # /matrix/state live — kept only so in-flight messages still post.
+        _log("legacy_callback", symbol=symbol, state=state, event_id=event_id)
+        try:
+            bundle = recipe_matrix(tier, card_id, state=state,
+                                   symbol=symbol, expiry=evt.get("expiry") or "",
+                                   event_attrs=evt)
+        except Exception as e:  # noqa: BLE001
+            result["status"] = "error"
+            result["reason"] = f"compose: {e}"
+            return result
+        result["source"] = "legacy_api"
     if (bundle.context or {}).get("card", {}).get("_enrich") == "minimal":
         _log("enrich_minimal", symbol=symbol, state=state,
              note="read-only API had no card — posting from event attributes only")
@@ -336,6 +388,17 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe,
         dedupe.mark(k, {"symbol": symbol, "state": state, "card_id": card_id, "mode": mode})
         if gap_hours > 0:
             dedupe.mark_state_time(state, datetime.now(timezone.utc))
+        if claimed:
+            # Posted — this row has done its job. (On failure it just stays
+            # claimed, full stop — commit 817fd82 made the push handler
+            # always ack, so Pub/Sub never redelivers and nothing re-claims
+            # it. It sits claimed, harmlessly, until prune_before_today()
+            # drops it the next day.)
+            try:
+                ledger.done(event_id)
+                _log("ledger_done", event_id=event_id)
+            except Exception as e:  # noqa: BLE001
+                _log("ledger_done_failed", event_id=event_id, error=str(e)[:200])
     result["status"] = "posted" if ok else "error"
     result["result_channels"] = posted_channels
     return result
@@ -346,8 +409,12 @@ def run_pull(tier, dedupe, *, mode, dry_run, max_msgs, timeout, sub=None):
     """Drain the subscription once (local / catch-up). Synchronous unary pull:
     on an EMPTY subscription the RPC blocks server-side and eventually surfaces
     DeadlineExceeded — that just means "nothing to pull", not an error, so it
-    exits 0 with processed=0. A message whose processing errors is left UNACKED
-    so Pub/Sub redelivers it (mirrors the push handler's 500)."""
+    exits 0 with processed=0. A message whose processing errors is still
+    ACKED, same as the push handler (commit 817fd82 made both always ack,
+    so nothing is left unacked and there is no 500 to mirror anymore) —
+    it's logged once (see `errors` below) and never auto-redelivered. A
+    ledger-claimed row that errors stays claimed until prune_before_today()
+    drops it the next day, same as the push path."""
     sub = (sub or tier.raw.get("MATRIX_PUBSUB_SUBSCRIPTION")
            or os.getenv("MATRIX_PUBSUB_SUBSCRIPTION") or "").strip()
     project = (tier.raw.get("MATRIX_PUBSUB_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
