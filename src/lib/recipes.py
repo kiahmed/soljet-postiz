@@ -501,6 +501,12 @@ def compose_matrix(tier: Tier, card: dict, *, max_chars: int = 260) -> str:
     past = bool(card.get("_past"))
     if past:
         hint = ""
+    # session_open is the MARKET read (walls, direction) — the engine-record
+    # hint ("Bias re-syncing — wait for a confirming win…") is advice about the
+    # engine's PICKS and doesn't belong on it (EdgeLane keeps the two apart; the
+    # 2026-09-30 NDX open post carried it anyway).
+    if st == "session_open":
+        hint = ""
 
     bits: list[str]
     if st == "daily_recap":
