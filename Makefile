@@ -8,6 +8,7 @@
         tunnel-up tunnel-check tunnel-down \
         simmer-preflight simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
         matrix-preflight matrix-poster matrix-sub-local matrix-serve matrix-event matrix-deploy \
+        reflex-preflight reflex-poster reflex-sub-local reflex-serve reflex-event reflex-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
@@ -184,6 +185,28 @@ matrix-event:       ## Process one inline event (usage: make matrix-event EVENT=
 
 matrix-deploy:      ## Provision Matrix's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--snap-only|--poster-only|--pubsub-only|--sub-local]
 	@DRY=$(DRY) ./ops/matrix/deploy.sh matrix $(PART)
+
+# ---- Facades · Reflex (event-driven product; bin/reflex_poster.py) ------
+# Publishes the finished post Reflex (facades-news-reactor) stores in its own
+# Supabase — no compose, no snap. Reflex's topic facades.reflex-signal-posts;
+# our sub facades.reflex-signal-posts.postiz. See docs/reflex_integration.md.
+reflex-preflight:   ## Check every GCP + .env + news-reactor DB dependency for Reflex (green OK / red FAIL)
+	@./ops/reflex/preflight.sh reflex
+
+reflex-poster:      ## Run the poster as a local Pub/Sub PULL drain [MODE=draft|now] [DRY=1] [SUB=<subscription>]
+	$(PYTHON) bin/reflex_poster.py --pull --mode $(or $(MODE),draft) $(if $(DRY),--dry-run) $(if $(SUB),--sub $(SUB))
+
+reflex-sub-local:   ## Create a PULL subscription on Reflex's topic for local validation (DRY=1 to print)
+	@DRY=$(DRY) ./ops/reflex/deploy.sh reflex --sub-local
+
+reflex-serve:       ## Run the poster HTTP push server (Cloud Run entrypoint) [MODE=] [DRY=1]
+	$(PYTHON) bin/reflex_poster.py --serve --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+reflex-event:       ## Publish one post by id (usage: make reflex-event EVENT='{"post_id":5}') [MODE=draft|now] [DRY=1]
+	$(PYTHON) bin/reflex_poster.py --event '$(EVENT)' --mode $(or $(MODE),draft) $(if $(DRY),--dry-run)
+
+reflex-deploy:      ## Provision Reflex's Cloud Run + Pub/Sub on GCP (DRY=1 to print) [PART=--sa-only|--poster-only|--pubsub-only|--sub-local]
+	@DRY=$(DRY) ./ops/reflex/deploy.sh reflex $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,

@@ -33,6 +33,8 @@ data/render_gcs_cache.json
 data/simmer_poster_dedupe.json
 data/matrix_poster_dedupe.json
 data/matrix_poster_state_gaps.json
+data/reflex_poster_dedupe.json
+data/reflex_poster_days.json
 
 # Postiz DB/media export for machine migration — contains LIVE OAuth tokens
 # and the Postiz login hash. Move by hand (scp/USB); never commit.

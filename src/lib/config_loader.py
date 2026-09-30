@@ -73,6 +73,7 @@ _FACADES_DIR = PRODUCTS_ROOT / "facades"
 _TIER_FILE_BY_ID = {
     "simmer": (_FACADES_DIR / "simmer_tier.config", _FACADES_DIR),
     "matrix": (_FACADES_DIR / "matrix_tier.config", _FACADES_DIR),
+    "reflex": (_FACADES_DIR / "reflex_tier.config", _FACADES_DIR),
     # "torque": (_FACADES_DIR / "torque_tier.config", _FACADES_DIR),
 }
 
