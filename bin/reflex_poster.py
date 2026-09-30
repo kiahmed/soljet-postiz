@@ -103,7 +103,7 @@ class Dedupe:
             except Exception as e:  # noqa: BLE001
                 _log("dedupe_firestore_unavailable", error=str(e))
         self._path = REPO_ROOT / "data" / "reflex_poster_dedupe.json"
-        self._day_path = REPO_ROOT / "data" / "reflex_poster_days.json"
+        self._day_path = REPO_ROOT / "data" / "reflex_poster_counts.json"
 
     def seen(self, k: str) -> bool:
         if self._fs is not None:
@@ -133,40 +133,44 @@ class Dedupe:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(sorted(cur)))
 
-    # ---- per-ET-day counter (REFLEX_MAX_POSTS_PER_DAY) -------------------
+    # ---- published-post counters (REFLEX_MAX_POSTS_PER_DAY / _WEEK) -------
+    # Keys are ET calendar periods: "day:2026-09-30", "week:2026-W40" (ISO
+    # week, Mon-Sun). Only signal posts count — the weekly recap doesn't.
     @staticmethod
-    def _today() -> str:
-        return datetime.now(ET).strftime("%Y-%m-%d")
+    def periods() -> dict[str, str]:
+        now = datetime.now(ET)
+        y, w, _ = now.isocalendar()
+        return {"day": f"day:{now:%Y-%m-%d}", "week": f"week:{y}-W{w:02d}"}
 
-    def posts_today(self) -> int:
-        day = self._today()
+    def count(self, key: str) -> int:
         if self._fs is not None:
             try:
-                doc = self._fs.collection(self.coll).document(f"__day__:{day}").get()
+                doc = self._fs.collection(self.coll).document(f"__count__:{key}").get()
                 return int((doc.to_dict() or {}).get("count", 0)) if doc.exists else 0
             except Exception as e:  # noqa: BLE001
-                _log("day_count_read_failed", error=str(e))
+                _log("count_read_failed", key=key, error=str(e))
                 return 0
         try:
-            return int(json.loads(self._day_path.read_text()).get(day, 0))
+            return int(json.loads(self._day_path.read_text()).get(key, 0))
         except (OSError, json.JSONDecodeError, ValueError):
             return 0
 
-    def bump_today(self) -> None:
-        day = self._today()
+    def bump(self) -> None:
+        keys = list(self.periods().values())
         if self._fs is not None:
             try:
                 from google.cloud import firestore
-                self._fs.collection(self.coll).document(f"__day__:{day}").set(
-                    {"count": firestore.Increment(1)}, merge=True)
+                for k in keys:
+                    self._fs.collection(self.coll).document(f"__count__:{k}").set(
+                        {"count": firestore.Increment(1)}, merge=True)
                 return
             except Exception as e:  # noqa: BLE001
-                _log("day_count_write_failed", error=str(e))
+                _log("count_write_failed", error=str(e))
         try:
             cur = json.loads(self._day_path.read_text())
         except (OSError, json.JSONDecodeError):
             cur = {}
-        cur = {day: int(cur.get(day, 0)) + 1}      # only today matters
+        cur = {k: int(cur.get(k, 0)) + 1 for k in keys}   # only current periods matter
         self._day_path.parent.mkdir(parents=True, exist_ok=True)
         self._day_path.write_text(json.dumps(cur))
 
@@ -308,6 +312,90 @@ def _write_png(event_id: str, png: bytes | None) -> Path | None:
     return p
 
 
+def _float_knob(tier, key: str) -> float:
+    try:
+        return float(tier.raw.get(key) or 0)
+    except ValueError:
+        return 0.0
+
+
+# ------------------------------------------------------------ promo gating
+# These posts are a promo teaser, not the product: only the standout moves go
+# out, and only a few a week. Everything else stays posted=false in Reflex's
+# table and feeds the weekly scorecard (run_recap).
+def quality_gate(tier, row: dict) -> str | None:
+    """None if the row is big enough to post, else the reason it isn't.
+    Prefers Reflex's 0DTE contract gain (option_gain_pct, once Reflex stores
+    it); until then falls back to the SPY move in bps."""
+    min_gain = _float_knob(tier, "REFLEX_MIN_OPTION_GAIN_PCT")
+    gain = row.get("option_gain_pct")
+    if min_gain and gain is not None:
+        g = float(gain)
+        return None if g >= min_gain else \
+            f"0DTE gain {g:.0f}% < {min_gain:g}% (REFLEX_MIN_OPTION_GAIN_PCT)"
+    min_bps = _float_knob(tier, "REFLEX_MIN_MOVE_BPS")
+    bps = float(row.get("move_bps") or 0)
+    if min_bps and bps < min_bps:
+        return f"move {bps:.1f} bps < {min_bps:g} bps (REFLEX_MIN_MOVE_BPS)"
+    return None
+
+
+def cap_reason(tier, dedupe: Dedupe) -> str | None:
+    """None if under both caps, else which cap is full. ET calendar day and
+    ISO week (Mon-Sun); only published signal posts count."""
+    periods = dedupe.periods()
+    for per, knob in (("day", "REFLEX_MAX_POSTS_PER_DAY"), ("week", "REFLEX_MAX_POSTS_PER_WEEK")):
+        cap = _int_knob(tier, knob)
+        if cap:
+            n = dedupe.count(periods[per])
+            if n >= cap:
+                return f"{per} cap: {n}/{cap} already posted ({knob})"
+    return None
+
+
+def with_cta(tier, label: str, text: str) -> list[str]:
+    """Post parts with the subscribe link. X: a self-reply (a link in the
+    main tweet costs reach). Other channels: a last line. Off while
+    REFLEX_CTA_URL is blank. Reflex's own caption is never edited."""
+    url = (tier.raw.get("REFLEX_CTA_URL") or "").strip()
+    if not url:
+        return [text]
+    line = (tier.raw.get("REFLEX_CTA_TEXT") or "Live Reflex calls, as they fire: {url}").format(url=url)
+    return [text, line] if label.upper() == "X" else [f"{text}\n\n{line}"]
+
+
+# ------------------------------------------------------------ weekly recap
+RECAP_TAGS = ["#Reflex", "#FacadesReflex", "#SPY", "#StockMarket"]
+
+
+def compose_recap(tier, rows: list[dict]) -> str | None:
+    """The scorecard text from every post Reflex made this week (posted or
+    not — it's the volume that sells the subscription, not the single call).
+    Reflex only stores confirmed moves, so this counts calls that paid, never
+    a win rate. None when there are too few to be worth a post."""
+    moves = [float(r["move_bps"]) for r in rows if r.get("move_bps") is not None]
+    if len(moves) < max(1, _int_knob(tier, "REFLEX_RECAP_MIN_POSTS")) or not moves:
+        return None
+    best = rows[0]                                  # since() sorts by move_bps desc
+    avg = sum(moves) / len(moves)
+    gains = [float(r["option_gain_pct"]) for r in rows if r.get("option_gain_pct") is not None]
+    extra = f" Best 0DTE contract: +{max(gains):.0f}%." if gains else ""
+    head = " ".join(str(best.get("headline") or "").split())
+    tags = " ".join(RECAP_TAGS)
+
+    def build(h: str) -> str:
+        return (f"📊 Reflex this week: {len(moves)} SPY move{'s' if len(moves) != 1 else ''} "
+                f"called off the headlines, avg {avg:.0f} bps in the called direction. "
+                f"Biggest: {float(best['move_bps']):.0f} bps after “{h}”.{extra} "
+                f"Subscribers got every call live. {tags}")
+
+    if x_len(build(head)) > 280:
+        while head and x_len(build(head.rstrip() + "…")) > 280:
+            head = head[:-1]
+        head = head.rstrip() + "…"
+    return build(head)
+
+
 # --------------------------------------------------------------------- publish
 def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | None = None,
                   mode: str = "draft", dry_run: bool = False) -> dict:
@@ -348,9 +436,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
         result["status"] = "duplicate"
         return result
 
-    cap = _int_knob(tier, "REFLEX_MAX_POSTS_PER_DAY")
-    if cap and not dry_run and dedupe.posts_today() >= cap:
-        result["reason"] = f"daily cap: {cap} post(s) already today (REFLEX_MAX_POSTS_PER_DAY)"
+    capped = cap_reason(tier, dedupe)
+    if capped and not dry_run:
+        result["reason"] = capped
         return result
 
     db = db or ReflexPostsDB(table=tier.raw.get("DATA_SOURCE_1_TABLE") or "public.best_signal_posts")
@@ -376,8 +464,10 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
         # Preview both standard channels even before any account is connected.
         preview = labels or ["X", "LinkedIn"]
         result.update(status="dry-run", media=str(png) if png else None,
+                      would_skip=quality_gate(tier, row) or capped,
                       alt=alt_text(row),
-                      rendered={lbl: compose_for_channel(tier, lbl, row) for lbl in preview},
+                      rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row))
+                                for lbl in preview},
                       x_len=x_len(compose_for_channel(tier, "X", row)))
         return result
 
@@ -391,7 +481,14 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
             if not row:
                 result["reason"] = "no unposted row (already posted, missing, or held by another worker)"
                 return result
-            result.update(_publish(tier, row, iids, event_id=event_id, mode=mode))
+            gated = quality_gate(tier, row)
+            if gated:
+                # Stays posted=false: the weekly recap still counts it.
+                result["reason"] = gated
+                return result
+            result.update(_publish(
+                tier, iids, source_id=event_id, png=row.get("image_png"), alt=alt_text(row),
+                text_for=lambda lbl: compose_for_channel(tier, lbl, row), mode=mode))
             if result["status"] == "posted":
                 dedupe_meta = {"post_id": post_id, "mode": mode}
                 if mode == "draft":
@@ -400,7 +497,7 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
                     _log("draft_row_left_unposted", event_id=event_id)
                 else:
                     dedupe.mark(event_id, dedupe_meta)
-                    dedupe.bump_today()
+                    dedupe.bump()
                     mark_posted()
                     _log("row_marked_posted", event_id=event_id, post_id=post_id)
     except Exception as e:  # noqa: BLE001
@@ -412,9 +509,11 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
     return result
 
 
-def _publish(tier, row: dict, iids: list[str], *, event_id: str, mode: str) -> dict:
-    png = _write_png(event_id, row.get("image_png"))
-    alt = alt_text(row)
+def _publish(tier, iids: list[str], *, source_id: str, png: bytes | None, alt: str,
+             text_for, mode: str, source_type: str = "reflex_post") -> dict:
+    """Upload the image once, then post text_for(label) (+ CTA) per channel."""
+    event_id = source_id
+    png = _write_png(source_id, png)
     client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY"))
     media: list[dict] = []
     if png:
@@ -432,10 +531,10 @@ def _publish(tier, row: dict, iids: list[str], *, event_id: str, mode: str) -> d
     texts = {}
     for iid in iids:
         lbl = channel_label(tier, iid)
-        text = compose_for_channel(tier, lbl, row)
-        texts[lbl] = text
+        parts = with_cta(tier, lbl, text_for(lbl))
+        texts[lbl] = "\n\n".join(parts)
         try:
-            resp = client.create_post(parts=[text], integration_ids=[iid],
+            resp = client.create_post(parts=parts, integration_ids=[iid],
                                       mode=mode, media=media)
             pid = _as_obj(resp).get("id") or _as_obj(resp).get("postId")
             posted_channels.append({"channel": lbl,
@@ -448,12 +547,56 @@ def _publish(tier, row: dict, iids: list[str], *, event_id: str, mode: str) -> d
 
     ok = [c for c in posted_channels if c["state"] in ("PUBLISHED", "DRAFT")]
     if ok:
-        posted_log.mark_posted(source_type="reflex_post", source_id=event_id, tier=TIER_ID,
+        posted_log.mark_posted(source_type=source_type, source_id=event_id, tier=TIER_ID,
                                mode=mode, text=texts.get("X") or next(iter(texts.values())),
                                integration_ids=list(iids),
                                response={"channels": posted_channels})
     return {"status": "posted" if ok else "error", "rendered": texts,
             "result_channels": posted_channels}
+
+
+def run_recap(tier, dedupe: Dedupe, *, db: ReflexPostsDB | None = None,
+              mode: str = "draft", dry_run: bool = False) -> dict:
+    """Weekly scorecard post (Cloud Scheduler -> POST /recap, Fri after close).
+    Counts every post Reflex made in the last REFLEX_RECAP_DAYS, attaches the
+    biggest move's image, and never touches the DB. Once per ISO week."""
+    key = f"RFX-RECAP-{dedupe.periods()['week'].split(':', 1)[1]}"
+    result = {"event_id": key, "status": "skipped"}
+    if dedupe.seen(key) and not dry_run:
+        result["status"] = "duplicate"
+        return result
+    db = db or ReflexPostsDB(table=tier.raw.get("DATA_SOURCE_1_TABLE") or "public.best_signal_posts")
+    if not db.enabled:
+        result.update(status="error", reason="REFLEX_SUPABASE_DB_URL unset")
+        return result
+    try:
+        rows = db.since(_int_knob(tier, "REFLEX_RECAP_DAYS") or 7)
+        text = compose_recap(tier, rows)
+        best = db.peek(int(rows[0]["id"]), include_posted=True) if (text and rows) else None
+    except Exception as e:  # noqa: BLE001
+        result.update(status="error", reason=f"db: {str(e)[:200]}")
+        return result
+    result["posts_in_window"] = len(rows)
+    if not text:
+        result["reason"] = f"only {len(rows)} post(s) this week (REFLEX_RECAP_MIN_POSTS)"
+        return result
+    alt = alt_text(best) if best else ""
+    iids = integration_ids_for(tier)
+    if dry_run:
+        png = _write_png(key, (best or {}).get("image_png"))
+        result.update(status="dry-run", media=str(png) if png else None, x_len=x_len(text),
+                      rendered={lbl: with_cta(tier, lbl, text)
+                                for lbl in ([channel_label(tier, i) for i in iids] or ["X", "LinkedIn"])})
+        return result
+    if not iids:
+        result.update(status="no-channels", reason="integration_ids_for(reflex) is empty")
+        return result
+    result.update(_publish(tier, iids, source_id=key, png=(best or {}).get("image_png"),
+                           alt=alt, text_for=lambda _lbl: text, mode=mode,
+                           source_type="reflex_recap"))
+    if result["status"] == "posted" and mode != "draft":
+        dedupe.mark(key, {"mode": mode, "posts": len(rows)})
+    return result
 
 
 # ----------------------------------------------------------------------- modes
@@ -538,6 +681,15 @@ def build_app(tier, dedupe, *, mode, dry_run):
             _log("push_handler_crash", error=str(e)[:400])
         return "", 204
 
+    @app.post("/recap")
+    def recap():  # noqa: ANN202 — Cloud Scheduler (OIDC as facades-poster-sa)
+        try:
+            r = run_recap(tier, dedupe, mode=mode, dry_run=dry_run)
+            _log("recap", **{k: v for k, v in r.items() if k != "rendered"})
+        except Exception as e:  # noqa: BLE001 — never make Scheduler retry a post
+            _log("recap_crash", error=str(e)[:400])
+        return "", 204
+
     return app
 
 
@@ -566,6 +718,7 @@ def main() -> int:
     g.add_argument("--pull", action="store_true", help="pull-drain the subscription once")
     g.add_argument("--event", help="process one inline event (JSON string or @file), "
                    "e.g. '{\"post_id\":5}'")
+    g.add_argument("--recap", action="store_true", help="post the weekly scorecard now")
     ap.add_argument("--mode", choices=["draft", "now"], default="draft",
                     help="Postiz post mode (default: draft — safe, row stays unposted)")
     ap.add_argument("--dry-run", action="store_true",
@@ -589,6 +742,11 @@ def main() -> int:
                           mode=args.mode, dry_run=args.dry_run)
         print(json.dumps(r, indent=2, default=str, ensure_ascii=False))
         return 0 if r.get("status") in ("posted", "dry-run", "duplicate", "skipped") else 1
+
+    if args.recap:
+        r = run_recap(tier, dedupe, mode=args.mode, dry_run=args.dry_run)
+        print(json.dumps(r, indent=2, default=str, ensure_ascii=False))
+        return 0 if r.get("status") != "error" else 1
 
     if args.pull:
         return run_pull(tier, dedupe, mode=args.mode, dry_run=args.dry_run,

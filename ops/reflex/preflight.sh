@@ -57,7 +57,8 @@ ACTIVE="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/d
 # ── 2. deployer IAM ──────────────────────────────────────────────────────
 section "deployer IAM ($DEPLOYER_SA)"
 for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.admin \
-            roles/iam.serviceAccountAdmin roles/secretmanager.admin roles/pubsub.admin; do
+            roles/iam.serviceAccountAdmin roles/secretmanager.admin roles/pubsub.admin \
+            roles/cloudscheduler.admin; do
   if proj_has_role "serviceAccount:$DEPLOYER_SA" "$role"; then ok "$role"; else bad "$role" "grant: gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$DEPLOYER_SA --role=$role"; fi
 done
 
@@ -114,6 +115,13 @@ if [ -n "$url" ]; then
   else bad "  └ run.invoker for runtime SA" "make reflex-deploy PART=--poster-only"; fi
 else
   warn "service $POSTER_SVC" "not deployed — make reflex-deploy PART=--poster-only"
+fi
+
+section "cloud scheduler"
+if gcloud scheduler jobs describe "${PRODUCT}-weekly-recap" --project="$PROJECT" --location="$REGION" >/dev/null 2>&1; then
+  ok "job ${PRODUCT}-weekly-recap" "$(gcloud scheduler jobs describe "${PRODUCT}-weekly-recap" --project="$PROJECT" --location="$REGION" --format='value(schedule,state)' 2>/dev/null)"
+else
+  warn "job ${PRODUCT}-weekly-recap" "not created — make reflex-deploy PART=--recap-only"
 fi
 
 # ── 7. tier config + .env + news-reactor DB ─────────────────────────────

@@ -25,9 +25,21 @@ Reflex poster ──publish──▶ topic facades.reflex-signal-posts   (Reflex
 | LinkedIn / others | `caption_text` + a hashtag paragraph |
 
 Tags are only trimmed from the end; `#Reflex #FacadesReflex` are always kept.
-Knobs live in `products/facades/reflex_tier.config`: `REFLEX_MAX_HASHTAGS_<CHANNEL>`,
-`REFLEX_MAX_AGE_MINUTES` (stale-message guard, 180), `REFLEX_MAX_POSTS_PER_DAY`
-(off). No scheduler — Reflex's own cadence (04:00–16:00 ET, a few a week) is the schedule.
+
+**Promo gating.** Public posts are a teaser for subscribers, not the feed. Knobs
+are in `products/facades/reflex_tier.config`:
+
+| Knob | Default | |
+|---|---|---|
+| `REFLEX_MIN_OPTION_GAIN_PCT` | 20 | 0DTE contract gain, used once Reflex adds `option_gain_pct` to the row |
+| `REFLEX_MIN_MOVE_BPS` | 15 | fallback until then (10 bps ≈ +15–20% on an ATM 0DTE) |
+| `REFLEX_MAX_POSTS_PER_DAY` / `_WEEK` | 1 / 3 | ET day, ISO week; first qualifying moves win |
+| `REFLEX_MAX_AGE_MINUTES` | 180 | stale-message guard |
+| `REFLEX_CTA_URL` | blank (off) | subscribe link: X self-reply, LinkedIn last line |
+| `REFLEX_RECAP_SCHEDULE` | `30 16 * * 5` | weekly scorecard (Cloud Scheduler → `POST /recap`) |
+
+Skipped posts stay `posted=false` and are counted in the weekly scorecard: every
+Reflex post of the week, average move, the biggest one (with its image).
 
 ## Pieces
 

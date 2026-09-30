@@ -5,7 +5,7 @@
 # (facades-news-reactor) ships the finished image + caption in its own
 # Supabase, so there is nothing to render here. See docs/reflex_integration.md.
 #
-#   ops/reflex/deploy.sh reflex [--sa-only|--poster-only|--pubsub-only|--sub-local|all]
+#   ops/reflex/deploy.sh reflex [--sa-only|--poster-only|--pubsub-only|--recap-only|--sub-local|all]
 #
 # --pubsub-only / all first check the reflex tier is ENABLED (registered + a
 # live channel id in .env) — don't subscribe for a product that can't post.
@@ -43,7 +43,7 @@
 # $GOOGLE_APPLICATION_CREDENTIALS first. DRY=1 prints every command instead.
 set -uo pipefail
 
-PRODUCT="${1:?usage: deploy.sh reflex [--sa-only|--poster-only|--pubsub-only|--sub-local|all]}"
+PRODUCT="${1:?usage: deploy.sh reflex [--sa-only|--poster-only|--pubsub-only|--recap-only|--sub-local|all]}"
 MODE="${2:-all}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
@@ -235,6 +235,28 @@ deploy_pubsub(){
     --dead-letter-topic="${SUB}-dlq" --max-delivery-attempts=5
 }
 
+# Weekly scorecard: Cloud Scheduler POSTs /recap on the poster (OIDC as the
+# runtime SA, which already holds run.invoker). Schedule from the tier config.
+RECAP_JOB="${PRODUCT}-weekly-recap"
+deploy_recap_job(){
+  echo "== Cloud Scheduler: $RECAP_JOB =="
+  local url sched
+  sched="$(grep -E '^REFLEX_RECAP_SCHEDULE=' products/facades/reflex_tier.config | cut -d'"' -f2)"
+  sched="${sched:-30 16 * * 5}"
+  url="$(gcloud run services describe "$POSTER_SVC" --project="$PROJECT" --region="$REGION" --format='value(status.url)' 2>/dev/null)"
+  if [ -z "$url" ]; then
+    [ "${DRY:-}" = 1 ] && url="https://${POSTER_SVC}-REPLACE.a.run.app" \
+      || { echo "  ! $POSTER_SVC not deployed yet — run --poster-only first"; return 1; }
+  fi
+  local verb=create
+  gcloud scheduler jobs describe "$RECAP_JOB" --project="$PROJECT" --location="$REGION" >/dev/null 2>&1 && verb=update
+  gc scheduler jobs "$verb" http "$RECAP_JOB" --location="$REGION" \
+    --schedule="$sched" --time-zone="America/New_York" \
+    --uri="${url}/recap" --http-method=POST \
+    --oidc-service-account-email="$RUNTIME_SA" --oidc-token-audience="$url" \
+    --attempt-deadline=120s --max-retry-attempts=0
+}
+
 # PULL subscription on Reflex's topic for local validation — `make
 # reflex-poster DRY=1 SUB=<this>`. Same filter. Idempotent.
 deploy_sub_local(){
@@ -257,7 +279,8 @@ case "$MODE" in
   --sub-local)   deploy_sub_local ;;
   --poster-only) deploy_poster ;;
   --pubsub-only) require_tier_ready; deploy_pubsub ;;
-  all)           require_tier_ready; require_topic; ensure_db_secret; ensure_sa; deploy_poster; deploy_pubsub ;;
+  --recap-only)  require_tier_ready; deploy_recap_job ;;
+  all)           require_tier_ready; require_topic; ensure_db_secret; ensure_sa; deploy_poster; deploy_pubsub; deploy_recap_job ;;
   *) echo "unknown mode $MODE"; exit 2 ;;
 esac
 echo "done."

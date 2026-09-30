@@ -10,23 +10,25 @@ different Supabase project from EdgeLane's SUPABASE_URL — never mix them.
 
 Always read the row at publish time: a Reflex re-render updates the row in
 place and sends no new message.
+
+Rows come back as dicts via to_jsonb, so a column Reflex adds later (e.g.
+option_gain_pct) shows up without a change here. Numbers arrive as float,
+timestamps as ISO strings; the heavy blobs are dropped except image_png.
 """
 from __future__ import annotations
 
 import os
 from contextlib import contextmanager
 
-_COLS = ("id", "event_id", "posted", "image_png", "caption", "caption_text",
-         "hashtags", "headline", "direction", "move_bps", "move_usd",
-         "minutes_to_peak", "armed_at", "created_at")
+_ROW = ("to_jsonb(t) - 'image_png' - 'card_png' - 'card_html' - 'chart_data' as j, "
+        "t.image_png")
 
 
-def _row(cur, rec) -> dict | None:
+def _row(rec) -> dict | None:
     if rec is None:
         return None
-    d = dict(zip([c.name for c in cur.description], rec))
-    if d.get("image_png") is not None:
-        d["image_png"] = bytes(d["image_png"])
+    d = dict(rec[0])
+    d["image_png"] = bytes(rec[1]) if rec[1] is not None else None
     return d
 
 
@@ -44,18 +46,31 @@ class ReflexPostsDB:
         return psycopg2.connect(self.url, connect_timeout=10,
                                 application_name="reflex-poster")
 
-    def peek(self, post_id: int, *, include_posted: bool = False) -> dict | None:
-        """Read-only fetch (dry runs, inspection). Takes no lock, writes nothing."""
-        where = "" if include_posted else " and not posted"
+    def _read(self, sql: str, args: tuple) -> list:
         conn = self._connect()
         try:
             conn.set_session(readonly=True, autocommit=True)
             with conn.cursor() as cur:
-                cur.execute(f"select {', '.join(_COLS)} from {self.table} "
-                            f"where id = %s{where}", (post_id,))
-                return _row(cur, cur.fetchone())
+                cur.execute(sql, args)
+                return cur.fetchall()
         finally:
             conn.close()
+
+    def peek(self, post_id: int, *, include_posted: bool = False) -> dict | None:
+        """Read-only fetch (dry runs, inspection). Takes no lock, writes nothing."""
+        where = "" if include_posted else " and not t.posted"
+        rows = self._read(f"select {_ROW} from {self.table} t where t.id = %s{where}",
+                          (post_id,))
+        return _row(rows[0]) if rows else None
+
+    def since(self, days: int) -> list[dict]:
+        """Every post (posted or not) created in the last `days` days, biggest
+        move first, without images — the weekly scorecard's input."""
+        rows = self._read(
+            f"select to_jsonb(t) - 'image_png' - 'card_png' - 'card_html' - 'chart_data' "
+            f"from {self.table} t where t.created_at >= now() - make_interval(days => %s) "
+            f"order by t.move_bps desc nulls last", (days,))
+        return [dict(r[0]) for r in rows]
 
     @contextmanager
     def claim(self, post_id: int):
@@ -70,10 +85,10 @@ class ReflexPostsDB:
         conn = self._connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(f"select {', '.join(_COLS)} from {self.table} "
-                            "where id = %s and not posted for update skip locked",
+                cur.execute(f"select {_ROW} from {self.table} t "
+                            "where t.id = %s and not t.posted for update of t skip locked",
                             (post_id,))
-                row = _row(cur, cur.fetchone())
+                row = _row(cur.fetchone())
 
                 def mark_posted() -> None:
                     cur.execute(f"update {self.table} set posted = true where id = %s",
