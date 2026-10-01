@@ -272,28 +272,86 @@ def _truncate(text: str, budget: int, measure) -> str:
     return text.rstrip() + "…"
 
 
-def compose_for_channel(tier, label: str, row: dict) -> str:
+def _ts(v) -> datetime | None:
+    if isinstance(v, datetime):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")) if v else None
+    except ValueError:
+        return None
+
+
+def is_past(tier, row: dict) -> bool:
+    """A catch-up post: published more than REFLEX_LIVE_WINDOW_MINUTES after
+    Reflex made it. Live posts keep Reflex's wording; past ones get ours."""
+    window = _int_knob(tier, "REFLEX_LIVE_WINDOW_MINUTES") or 60
+    created = _ts(row.get("created_at"))
+    return bool(created) and datetime.now(timezone.utc) - created > timedelta(minutes=window)
+
+
+def past_text(row: dict) -> str:
+    """Past-tense wording for a catch-up post. No headline quote — the card
+    already shows it. e.g. "🟢 On Sep 28, Reflex read a headline bullish 20s
+    after it hit. $SPY then ran +42 bps ($3.22/share) in 10 min." """
+    bear = str(row.get("direction") or "").lower().startswith("bear")
+    armed, pub = _ts(row.get("armed_at")), _ts(row.get("published_at"))
+    day = armed.astimezone(ET).strftime("%b %-d") if armed else "a recent session"
+    lead = ""
+    if armed and pub and armed >= pub:
+        lead = f" {round((armed - pub).total_seconds())}s after it hit"
+    try:
+        bps = f"{float(row.get('move_bps')):.0f}"
+    except (TypeError, ValueError):
+        bps = "?"
+    usd = ""
+    try:
+        usd = f" (${float(row.get('move_usd')):.2f}/share)"
+    except (TypeError, ValueError):
+        pass
+    try:
+        mins = f" in {max(1, round(float(row.get('minutes_to_peak'))))} min"
+    except (TypeError, ValueError):
+        mins = ""
+    verb = f"dropped {bps} bps" if bear else f"ran +{bps} bps"
+    return (f"{'🔴' if bear else '🟢'} On {day}, Reflex read a headline "
+            f"{'bearish' if bear else 'bullish'}{lead}. $SPY then {verb}{usd}{mins}.")
+
+
+def post_tags(tier, row: dict) -> list[str]:
+    """Reflex's tags with REFLEX_PROMO_TAGS slotted in right after the brand
+    tags (so they survive end-trimming), no duplicates."""
     tags = [t for t in (row.get("hashtags") or []) if t]
-    caption = (row.get("caption") or "").strip()
+    brand = tags[:2] or ["#Reflex", "#FacadesReflex"]   # Reflex's doc: first two are brand
+    promo = (tier.raw.get("REFLEX_PROMO_TAGS") or "").split()
+    out: list[str] = []
+    for t in brand + promo + tags[2:]:
+        if t.lower() not in {x.lower() for x in out}:
+            out.append(t)
+    return out
+
+
+def hook_line(tier, row: dict) -> str | None:
+    """The promo line, on its own as the last line before the link (X: before
+    the sign-up pointer). Rotates through REFLEX_HOOKS ('|'-separated) by post id."""
+    hooks = [h.strip() for h in (tier.raw.get("REFLEX_HOOKS") or "").split("|") if h.strip()]
+    if not hooks:
+        return None
+    try:
+        return hooks[int(row.get("id") or 0) % len(hooks)]
+    except (TypeError, ValueError):
+        return hooks[0]
+
+
+def compose_for_channel(tier, label: str, row: dict) -> str:
+    """Body = wording + tags. Live: Reflex's caption_text untouched. Past
+    (catch-up): our past-tense wording. Tag trimming to fit is with_cta's job."""
+    text = past_text(row) if is_past(tier, row) else (_base_text(row) or
+                                                      (row.get("caption") or "").strip())
     max_tags = _int_knob(tier, f"REFLEX_MAX_HASHTAGS_{label.upper()}")
-
+    tags = trim_tags(post_tags(tier, row), max_tags=max_tags)
     if label.upper() == "X":
-        # Reflex's caption is the post. Rebuild only if a tag cap is set or it
-        # somehow measures over 280.
-        if caption and x_len(caption) <= 280 and (not max_tags or len(tags) <= max_tags):
-            return caption
-        text = _base_text(row)
-        kept = trim_tags(tags, max_tags=max_tags,
-                         fits=lambda t: x_len(f"{text} {' '.join(t)}".strip()) <= 280)
-        tag_str = " ".join(kept)
-        text = _truncate(text, 280 - (x_len(tag_str) + 1 if tag_str else 0), x_len)
-        return f"{text} {tag_str}".strip()
-
-    limit = max_chars_for_channel(label)
-    text = _base_text(row) or caption
-    kept = trim_tags(tags, max_tags=max_tags,
-                     fits=lambda t: len(text) + 2 + len(" ".join(t)) <= limit)
-    return f"{text}\n\n{' '.join(kept)}" if kept else text
+        return f"{text} {' '.join(tags)}".strip()
+    return f"{text}\n\n{' '.join(tags)}" if tags else text
 
 
 def alt_text(row: dict) -> str:
@@ -418,38 +476,41 @@ def cap_reason(tier, dedupe: Dedupe) -> str | None:
     return None
 
 
-def with_cta(tier, label: str, text: str, extra: str | None = None) -> list[str]:
-    """Post parts: Reflex's text untouched, then `extra` (the premium line)
-    and the subscribe link. X: extra joins the main tweet only if it still
-    fits 280, else it leads the self-reply; the link is always in the reply
-    (a link in the main tweet costs reach). Other channels: last lines.
+def with_cta(tier, label: str, text: str, extra: str | None = None,
+             hook: str | None = None) -> list[str]:
+    """Post parts: body, then `extra` (premium line), then `hook` on its own
+    line, then the subscribe link. X: the link goes in a self-reply and the
+    first tweet ends with the sign-up pointer; to fit 280 the premium line
+    moves to the reply, then non-brand tags drop from the end, then the
+    wording is shortened. Other channels: each a paragraph, link last.
     The link is off while REFLEX_CTA_URL is blank."""
     url = (tier.raw.get("REFLEX_CTA_URL") or "").strip()
     cta = ((tier.raw.get("REFLEX_CTA_TEXT") or "Live Reflex calls, as they fire: {url}")
            .format(url=url) if url else None)
     if label.upper() != "X":
-        tail = "\n".join(x for x in (extra, cta) if x)
-        return [f"{text}\n\n{tail}" if tail else text]
-    # With a link reply, the first tweet ends with a pointer to it (readers
-    # miss replies). Room comes from: premium line -> reply, then trailing
-    # non-brand hashtags dropped from the end. Reflex's wording is never cut.
-    pointer = (f"\n{tier.raw.get('REFLEX_X_CTA_POINTER') or 'Sign up link below ↓'}"
-               if cta else "")
-    main, reply = text, []
-    if extra:
-        if x_len(f"{text}\n{extra}{pointer}") <= 280:
-            main = f"{text}\n{extra}"
-        else:
-            reply.append(extra)
-    while pointer and x_len(main + pointer) > 280:
-        m = re.search(r"\s(#\w+)$", main)
+        return ["\n\n".join(x for x in (text, extra, hook, cta) if x)]
+    pointer = (tier.raw.get("REFLEX_X_CTA_POINTER") or "Sign up link below ↓") if cta else None
+
+    def assemble(body, ex):
+        return "\n".join(x for x in (body, ex, hook, pointer) if x)
+
+    body, ex, reply = text, extra, []
+    if ex and x_len(assemble(body, ex)) > 280:
+        reply.append(ex)
+        ex = None
+    while x_len(assemble(body, ex)) > 280:
+        m = re.search(r"\s(#\w+)$", body)
         if not m or _is_brand(m.group(1)):
             break
-        main = main[:m.start()]
-    if pointer and x_len(main + pointer) <= 280:
-        main += pointer
+        body = body[:m.start()]
+    over = x_len(assemble(body, ex)) - 280
+    if over > 0:
+        m = re.search(r"(\s#\w+)+$", body)
+        words, tags = (body[:m.start()], body[m.start():]) if m else (body, "")
+        body = _truncate(words, x_len(words) - over, x_len) + tags
     if cta:
         reply.append(cta)
+    main = assemble(body, ex)
     return [main, "\n".join(reply)] if reply else [main]
 
 
@@ -559,8 +620,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
                       drought=drought,
                       would_skip=quality_gate(tier, row, drought=drought) or capped,
                       alt=alt_text(row),
+                      past=is_past(tier, row),
                       rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row),
-                                               premium_line(tier, row))
+                                               premium_line(tier, row), hook_line(tier, row))
                                 for lbl in preview},
                       x_len=x_len(compose_for_channel(tier, "X", row)))
         return result
@@ -583,7 +645,7 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
             result.update(_publish(
                 tier, iids, source_id=event_id, png=row.get("image_png"), alt=alt_text(row),
                 text_for=lambda lbl: compose_for_channel(tier, lbl, row),
-                extra=premium_line(tier, row), mode=mode))
+                extra=premium_line(tier, row), hook=hook_line(tier, row), mode=mode))
             if result["status"] == "posted":
                 dedupe_meta = {"post_id": post_id, "mode": mode}
                 if mode == "draft":
@@ -606,7 +668,7 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
 
 def _publish(tier, iids: list[str], *, source_id: str, png: bytes | None, alt: str,
              text_for, mode: str, source_type: str = "reflex_post",
-             extra: str | None = None) -> dict:
+             extra: str | None = None, hook: str | None = None) -> dict:
     """Upload the image once, then post text_for(label) (+ CTA) per channel."""
     event_id = source_id
     png = _write_png(source_id, png)
@@ -627,7 +689,7 @@ def _publish(tier, iids: list[str], *, source_id: str, png: bytes | None, alt: s
     texts = {}
     for iid in iids:
         lbl = channel_label(tier, iid)
-        parts = with_cta(tier, lbl, text_for(lbl), extra)
+        parts = with_cta(tier, lbl, text_for(lbl), extra, hook)
         texts[lbl] = "\n\n".join(parts)
         try:
             resp = client.create_post(parts=parts, integration_ids=[iid],
