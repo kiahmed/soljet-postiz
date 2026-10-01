@@ -31,8 +31,9 @@ are in `products/facades/reflex_tier.config`:
 
 | Knob | Default | |
 |---|---|---|
-| `REFLEX_MIN_OPTION_GAIN_PCT` | 20 | 0DTE contract gain, used once Reflex adds `option_gain_pct` to the row |
-| `REFLEX_MIN_MOVE_BPS` | 15 | fallback until then (10 bps ≈ +15–20% on an ATM 0DTE) |
+| `REFLEX_MIN_PREMIUM_GAIN_PCT` | 20 | Reflex's recorded `premium.gain_pct` (0DTE ATM contract, arming → SPY peak). Never computed here |
+| `REFLEX_MIN_MOVE_BPS` | 15 | only for posts whose `premium` is a `note` (pre-market arm, expired contract); blank = require a premium |
+| `REFLEX_SHOW_PREMIUM` | true | "0DTE ATM call +27.9%", quoted as-is: in the tweet if it fits 280, else the reply; last line on LinkedIn. Never in the caption |
 | `REFLEX_MAX_POSTS_PER_DAY` / `_WEEK` | 1 / 3 | ET day, ISO week; first qualifying moves win |
 | `REFLEX_MAX_AGE_MINUTES` | 180 | stale-message guard |
 | `REFLEX_CTA_URL` | blank (off) | subscribe link: X self-reply, LinkedIn last line |

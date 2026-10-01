@@ -323,17 +323,46 @@ def _float_knob(tier, key: str) -> float:
 # These posts are a promo teaser, not the product: only the standout moves go
 # out, and only a few a week. Everything else stays posted=false in Reflex's
 # table and feeds the weekly scorecard (run_recap).
+def premium_gain(row: dict) -> tuple[str, float] | None:
+    """(type, gain_pct) from Reflex's recorded `premium` — the 0DTE ATM
+    contract's last trade at arming vs at SPY's peak (bottom, if bearish).
+    None when the row carries a `note` instead (armed pre-market, contract
+    expired, no trades). Never computed or estimated here — Reflex's rule."""
+    p = row.get("premium")
+    if not isinstance(p, dict) or p.get("note") or p.get("gain_pct") is None:
+        return None
+    try:
+        return str(p.get("type") or "call"), float(p["gain_pct"])
+    except (TypeError, ValueError):
+        return None
+
+
+def premium_line(tier, row: dict) -> str | None:
+    """"0DTE ATM call +27.9%" — gain_pct quoted as-is. Not part of Reflex's
+    caption, so it rides alongside it (see with_cta)."""
+    if str(tier.raw.get("REFLEX_SHOW_PREMIUM") or "true").lower() != "true":
+        return None
+    pg = premium_gain(row)
+    if not pg:
+        return None
+    kind, gain = pg
+    raw = (row.get("premium") or {}).get("gain_pct")
+    return f"0DTE ATM {kind} {'+' if gain >= 0 else ''}{raw}%"
+
+
 def quality_gate(tier, row: dict) -> str | None:
     """None if the row is big enough to post, else the reason it isn't.
-    Prefers Reflex's 0DTE contract gain (option_gain_pct, once Reflex stores
-    it); until then falls back to the SPY move in bps."""
-    min_gain = _float_knob(tier, "REFLEX_MIN_OPTION_GAIN_PCT")
-    gain = row.get("option_gain_pct")
-    if min_gain and gain is not None:
-        g = float(gain)
-        return None if g >= min_gain else \
-            f"0DTE gain {g:.0f}% < {min_gain:g}% (REFLEX_MIN_OPTION_GAIN_PCT)"
+    Uses Reflex's recorded premium.gain_pct when the post has one; a post with
+    only a premium `note` (pre-market arm, expired contract) falls back to the
+    SPY move in bps — blank REFLEX_MIN_MOVE_BPS to require a premium."""
+    min_gain = _float_knob(tier, "REFLEX_MIN_PREMIUM_GAIN_PCT")
+    pg = premium_gain(row)
+    if min_gain and pg:
+        return None if pg[1] >= min_gain else \
+            f"0DTE {pg[0]} {pg[1]:g}% < {min_gain:g}% (REFLEX_MIN_PREMIUM_GAIN_PCT)"
     min_bps = _float_knob(tier, "REFLEX_MIN_MOVE_BPS")
+    if min_gain and not min_bps and not pg:
+        return "no recorded premium and REFLEX_MIN_MOVE_BPS is blank"
     bps = float(row.get("move_bps") or 0)
     if min_bps and bps < min_bps:
         return f"move {bps:.1f} bps < {min_bps:g} bps (REFLEX_MIN_MOVE_BPS)"
@@ -353,15 +382,27 @@ def cap_reason(tier, dedupe: Dedupe) -> str | None:
     return None
 
 
-def with_cta(tier, label: str, text: str) -> list[str]:
-    """Post parts with the subscribe link. X: a self-reply (a link in the
-    main tweet costs reach). Other channels: a last line. Off while
-    REFLEX_CTA_URL is blank. Reflex's own caption is never edited."""
+def with_cta(tier, label: str, text: str, extra: str | None = None) -> list[str]:
+    """Post parts: Reflex's text untouched, then `extra` (the premium line)
+    and the subscribe link. X: extra joins the main tweet only if it still
+    fits 280, else it leads the self-reply; the link is always in the reply
+    (a link in the main tweet costs reach). Other channels: last lines.
+    The link is off while REFLEX_CTA_URL is blank."""
     url = (tier.raw.get("REFLEX_CTA_URL") or "").strip()
-    if not url:
-        return [text]
-    line = (tier.raw.get("REFLEX_CTA_TEXT") or "Live Reflex calls, as they fire: {url}").format(url=url)
-    return [text, line] if label.upper() == "X" else [f"{text}\n\n{line}"]
+    cta = ((tier.raw.get("REFLEX_CTA_TEXT") or "Live Reflex calls, as they fire: {url}")
+           .format(url=url) if url else None)
+    if label.upper() != "X":
+        tail = "\n".join(x for x in (extra, cta) if x)
+        return [f"{text}\n\n{tail}" if tail else text]
+    main, reply = text, []
+    if extra:
+        if x_len(f"{text}\n{extra}") <= 280:
+            main = f"{text}\n{extra}"
+        else:
+            reply.append(extra)
+    if cta:
+        reply.append(cta)
+    return [main, "\n".join(reply)] if reply else [main]
 
 
 # ------------------------------------------------------------ weekly recap
@@ -378,8 +419,8 @@ def compose_recap(tier, rows: list[dict]) -> str | None:
         return None
     best = rows[0]                                  # since() sorts by move_bps desc
     avg = sum(moves) / len(moves)
-    gains = [float(r["option_gain_pct"]) for r in rows if r.get("option_gain_pct") is not None]
-    extra = f" Best 0DTE contract: +{max(gains):.0f}%." if gains else ""
+    gains = [g[1] for g in map(premium_gain, rows) if g]   # recorded only, never estimated
+    extra = f" Best 0DTE ATM contract: +{max(gains):g}%." if gains else ""
     head = " ".join(str(best.get("headline") or "").split())
     tags = " ".join(RECAP_TAGS)
 
@@ -466,7 +507,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
         result.update(status="dry-run", media=str(png) if png else None,
                       would_skip=quality_gate(tier, row) or capped,
                       alt=alt_text(row),
-                      rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row))
+                      rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row),
+                                               premium_line(tier, row))
                                 for lbl in preview},
                       x_len=x_len(compose_for_channel(tier, "X", row)))
         return result
@@ -488,7 +530,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
                 return result
             result.update(_publish(
                 tier, iids, source_id=event_id, png=row.get("image_png"), alt=alt_text(row),
-                text_for=lambda lbl: compose_for_channel(tier, lbl, row), mode=mode))
+                text_for=lambda lbl: compose_for_channel(tier, lbl, row),
+                extra=premium_line(tier, row), mode=mode))
             if result["status"] == "posted":
                 dedupe_meta = {"post_id": post_id, "mode": mode}
                 if mode == "draft":
@@ -510,7 +553,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
 
 
 def _publish(tier, iids: list[str], *, source_id: str, png: bytes | None, alt: str,
-             text_for, mode: str, source_type: str = "reflex_post") -> dict:
+             text_for, mode: str, source_type: str = "reflex_post",
+             extra: str | None = None) -> dict:
     """Upload the image once, then post text_for(label) (+ CTA) per channel."""
     event_id = source_id
     png = _write_png(source_id, png)
@@ -531,7 +575,7 @@ def _publish(tier, iids: list[str], *, source_id: str, png: bytes | None, alt: s
     texts = {}
     for iid in iids:
         lbl = channel_label(tier, iid)
-        parts = with_cta(tier, lbl, text_for(lbl))
+        parts = with_cta(tier, lbl, text_for(lbl), extra)
         texts[lbl] = "\n\n".join(parts)
         try:
             resp = client.create_post(parts=parts, integration_ids=[iid],
