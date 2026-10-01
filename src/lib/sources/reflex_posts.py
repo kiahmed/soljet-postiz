@@ -49,7 +49,9 @@ class ReflexPostsDB:
     def _read(self, sql: str, args: tuple) -> list:
         conn = self._connect()
         try:
-            conn.set_session(readonly=True, autocommit=True)
+            # Per-transaction (BEGIN READ ONLY), never session-level: the pooler
+            # (transaction mode) would leak a session setting to other clients.
+            conn.set_session(readonly=True)
             with conn.cursor() as cur:
                 cur.execute(sql, args)
                 return cur.fetchall()
@@ -83,6 +85,7 @@ class ReflexPostsDB:
         row is None when the post is already posted, missing, or held elsewhere.
         """
         conn = self._connect()
+        conn.set_session(readonly=False)    # explicit BEGIN READ WRITE (pooler-safe)
         try:
             with conn.cursor() as cur:
                 cur.execute(f"select {_ROW} from {self.table} t "

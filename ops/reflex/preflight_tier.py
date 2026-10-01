@@ -75,7 +75,7 @@ try:
     import psycopg2
     table = t.raw.get("DATA_SOURCE_1_TABLE") or "public.best_signal_posts"
     conn = psycopg2.connect(url, connect_timeout=10, application_name="reflex-preflight")
-    conn.set_session(readonly=True, autocommit=True)
+    conn.set_session(readonly=True)
     with conn.cursor() as cur:
         cur.execute(f"select count(*) filter (where not posted), count(*) from {table}")
         unposted, total = cur.fetchone()
