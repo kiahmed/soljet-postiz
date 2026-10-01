@@ -155,14 +155,35 @@ class Dedupe:
         except (OSError, json.JSONDecodeError, ValueError):
             return 0
 
+    def last_post_at(self) -> datetime | None:
+        """When the last signal post was published (drought rule)."""
+        at = None
+        if self._fs is not None:
+            try:
+                doc = self._fs.collection(self.coll).document("__last_post__").get()
+                at = (doc.to_dict() or {}).get("at") if doc.exists else None
+            except Exception as e:  # noqa: BLE001
+                _log("last_post_read_failed", error=str(e))
+        else:
+            try:
+                at = json.loads(self._day_path.read_text()).get("last_post_at")
+            except (OSError, json.JSONDecodeError):
+                at = None
+        try:
+            return datetime.fromisoformat(at) if at else None
+        except ValueError:
+            return None
+
     def bump(self) -> None:
         keys = list(self.periods().values())
+        now = datetime.now(timezone.utc).isoformat()
         if self._fs is not None:
             try:
                 from google.cloud import firestore
                 for k in keys:
                     self._fs.collection(self.coll).document(f"__count__:{k}").set(
                         {"count": firestore.Increment(1)}, merge=True)
+                self._fs.collection(self.coll).document("__last_post__").set({"at": now})
                 return
             except Exception as e:  # noqa: BLE001
                 _log("count_write_failed", error=str(e))
@@ -170,7 +191,8 @@ class Dedupe:
             cur = json.loads(self._day_path.read_text())
         except (OSError, json.JSONDecodeError):
             cur = {}
-        cur = {k: int(cur.get(k, 0)) + 1 for k in keys}   # only current periods matter
+        cur = {**{k: int(cur.get(k, 0)) + 1 for k in keys},   # only current periods matter
+               "last_post_at": now}
         self._day_path.parent.mkdir(parents=True, exist_ok=True)
         self._day_path.write_text(json.dumps(cur))
 
@@ -350,22 +372,36 @@ def premium_line(tier, row: dict) -> str | None:
     return f"0DTE ATM {kind} {'+' if gain >= 0 else ''}{raw}%"
 
 
-def quality_gate(tier, row: dict) -> str | None:
+def in_drought(tier, last_post: datetime | None) -> bool:
+    """True when nothing has posted for REFLEX_DROUGHT_DAYS (or ever) — the
+    bar then drops so the account doesn't go quiet. 0/blank disables."""
+    days = _float_knob(tier, "REFLEX_DROUGHT_DAYS")
+    if not days:
+        return False
+    return last_post is None or \
+        datetime.now(timezone.utc) - last_post >= timedelta(days=days)
+
+
+def quality_gate(tier, row: dict, *, drought: bool = False) -> str | None:
     """None if the row is big enough to post, else the reason it isn't.
     Uses Reflex's recorded premium.gain_pct when the post has one; a post with
     only a premium `note` (pre-market arm, expired contract) falls back to the
-    SPY move in bps — blank REFLEX_MIN_MOVE_BPS to require a premium."""
-    min_gain = _float_knob(tier, "REFLEX_MIN_PREMIUM_GAIN_PCT")
+    SPY move in bps — blank REFLEX_MIN_MOVE_BPS to require a premium.
+    In a drought the REFLEX_DROUGHT_* floors apply instead."""
+    sfx = "DROUGHT_MIN" if drought else "MIN"
+    gain_knob = "REFLEX_DROUGHT_MIN_GAIN_PCT" if drought else "REFLEX_MIN_PREMIUM_GAIN_PCT"
+    min_gain = _float_knob(tier, gain_knob)
     pg = premium_gain(row)
     if min_gain and pg:
         return None if pg[1] >= min_gain else \
-            f"0DTE {pg[0]} {pg[1]:g}% < {min_gain:g}% (REFLEX_MIN_PREMIUM_GAIN_PCT)"
-    min_bps = _float_knob(tier, "REFLEX_MIN_MOVE_BPS")
+            f"0DTE {pg[0]} {pg[1]:g}% < {min_gain:g}% ({gain_knob})"
+    bps_knob = f"REFLEX_{sfx}_MOVE_BPS"
+    min_bps = _float_knob(tier, bps_knob)
     if min_gain and not min_bps and not pg:
-        return "no recorded premium and REFLEX_MIN_MOVE_BPS is blank"
+        return f"no recorded premium and {bps_knob} is blank"
     bps = float(row.get("move_bps") or 0)
     if min_bps and bps < min_bps:
-        return f"move {bps:.1f} bps < {min_bps:g} bps (REFLEX_MIN_MOVE_BPS)"
+        return f"move {bps:.1f} bps < {min_bps:g} bps ({bps_knob})"
     return None
 
 
@@ -478,6 +514,9 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
         return result
 
     capped = cap_reason(tier, dedupe)
+    drought = in_drought(tier, dedupe.last_post_at())
+    if drought:
+        result["drought"] = True
     if capped and not dry_run:
         result["reason"] = capped
         return result
@@ -505,7 +544,8 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
         # Preview both standard channels even before any account is connected.
         preview = labels or ["X", "LinkedIn"]
         result.update(status="dry-run", media=str(png) if png else None,
-                      would_skip=quality_gate(tier, row) or capped,
+                      drought=drought,
+                      would_skip=quality_gate(tier, row, drought=drought) or capped,
                       alt=alt_text(row),
                       rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row),
                                                premium_line(tier, row))
@@ -523,7 +563,7 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
             if not row:
                 result["reason"] = "no unposted row (already posted, missing, or held by another worker)"
                 return result
-            gated = quality_gate(tier, row)
+            gated = quality_gate(tier, row, drought=drought)
             if gated:
                 # Stays posted=false: the weekly recap still counts it.
                 result["reason"] = gated
