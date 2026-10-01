@@ -430,12 +430,24 @@ def with_cta(tier, label: str, text: str, extra: str | None = None) -> list[str]
     if label.upper() != "X":
         tail = "\n".join(x for x in (extra, cta) if x)
         return [f"{text}\n\n{tail}" if tail else text]
+    # With a link reply, the first tweet ends with a pointer to it (readers
+    # miss replies). Room comes from: premium line -> reply, then trailing
+    # non-brand hashtags dropped from the end. Reflex's wording is never cut.
+    pointer = (f"\n{tier.raw.get('REFLEX_X_CTA_POINTER') or 'Sign up link below ↓'}"
+               if cta else "")
     main, reply = text, []
     if extra:
-        if x_len(f"{text}\n{extra}") <= 280:
+        if x_len(f"{text}\n{extra}{pointer}") <= 280:
             main = f"{text}\n{extra}"
         else:
             reply.append(extra)
+    while pointer and x_len(main + pointer) > 280:
+        m = re.search(r"\s(#\w+)$", main)
+        if not m or _is_brand(m.group(1)):
+            break
+        main = main[:m.start()]
+    if pointer and x_len(main + pointer) <= 280:
+        main += pointer
     if cta:
         reply.append(cta)
     return [main, "\n".join(reply)] if reply else [main]
