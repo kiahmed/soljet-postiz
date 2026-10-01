@@ -43,7 +43,7 @@ class ReflexPostsDB:
 
     def _connect(self):
         import psycopg2
-        return psycopg2.connect(self.url, connect_timeout=10,
+        return psycopg2.connect(self.url, connect_timeout=10, sslmode="require",
                                 application_name="reflex-poster")
 
     def _read(self, sql: str, args: tuple) -> list:
