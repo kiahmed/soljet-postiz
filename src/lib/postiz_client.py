@@ -78,7 +78,9 @@ class PostizClient:
 
         image_entries: list[dict] = []
         if media:
-            image_entries = [{"id": m["id"], "path": m["path"]} for m in media]
+            image_entries = [{"id": m["id"], "path": m["path"],
+                              **({"alt": m["alt"]} if m.get("alt") else {})}
+                             for m in media]
         elif media_ids:
             image_entries = [{"id": m} for m in media_ids]  # legacy; will fail validation
 
