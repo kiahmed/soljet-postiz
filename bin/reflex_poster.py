@@ -281,24 +281,26 @@ def _ts(v) -> datetime | None:
         return None
 
 
-def is_past(tier, row: dict) -> bool:
-    """A catch-up post: published more than REFLEX_LIVE_WINDOW_MINUTES after
-    Reflex made it. Live posts keep Reflex's wording; past ones get ours."""
-    window = _int_knob(tier, "REFLEX_LIVE_WINDOW_MINUTES") or 60
-    created = _ts(row.get("created_at"))
-    return bool(created) and datetime.now(timezone.utc) - created > timedelta(minutes=window)
+TIMING = ("as soon as it hit", "the moment the news came out", "right as the news broke")
 
 
-def past_text(row: dict) -> str:
-    """Past-tense wording for a catch-up post. No headline quote — the card
-    already shows it. e.g. "🟢 On Sep 28, Reflex read a headline bullish 20s
-    after it hit. $SPY then ran +42 bps ($3.22/share) in 10 min." """
+def post_text(row: dict) -> str:
+    """Our wording, built from Reflex's raw fields — Reflex's caption is not
+    used. No headline quote (the card shows it), no seconds count. e.g.
+    "🟢 On Sep 28, Reflex read a headline bullish as soon as it hit. $SPY then
+    ran +42 bps ($3.22/share) in 10 min." Same ET day -> "Today"."""
     bear = str(row.get("direction") or "").lower().startswith("bear")
-    armed, pub = _ts(row.get("armed_at")), _ts(row.get("published_at"))
-    day = armed.astimezone(ET).strftime("%b %-d") if armed else "a recent session"
-    lead = ""
-    if armed and pub and armed >= pub:
-        lead = f" {round((armed - pub).total_seconds())}s after it hit"
+    armed = _ts(row.get("armed_at"))
+    if armed and armed.astimezone(ET).date() == datetime.now(ET).date():
+        day = "Today"
+    elif armed:
+        day = f"On {armed.astimezone(ET):%b} {armed.astimezone(ET).day}"
+    else:
+        day = "Recently"
+    try:
+        timing = TIMING[int(row.get("id") or 0) % len(TIMING)]
+    except (TypeError, ValueError):
+        timing = TIMING[0]
     try:
         bps = f"{float(row.get('move_bps')):.0f}"
     except (TypeError, ValueError):
@@ -313,8 +315,8 @@ def past_text(row: dict) -> str:
     except (TypeError, ValueError):
         mins = ""
     verb = f"dropped {bps} bps" if bear else f"ran +{bps} bps"
-    return (f"{'🔴' if bear else '🟢'} On {day}, Reflex read a headline "
-            f"{'bearish' if bear else 'bullish'}{lead}. $SPY then {verb}{usd}{mins}.")
+    return (f"{'🔴' if bear else '🟢'} {day}, Reflex read a headline "
+            f"{'bearish' if bear else 'bullish'} {timing}. $SPY then {verb}{usd}{mins}.")
 
 
 def post_tags(tier, row: dict) -> list[str]:
@@ -343,10 +345,9 @@ def hook_line(tier, row: dict) -> str | None:
 
 
 def compose_for_channel(tier, label: str, row: dict) -> str:
-    """Body = wording + tags. Live: Reflex's caption_text untouched. Past
-    (catch-up): our past-tense wording. Tag trimming to fit is with_cta's job."""
-    text = past_text(row) if is_past(tier, row) else (_base_text(row) or
-                                                      (row.get("caption") or "").strip())
+    """Body = our wording (post_text) + tags. Reflex supplies the raw fields;
+    the wording rules live here. Tag trimming to fit is with_cta's job."""
+    text = post_text(row)
     max_tags = _int_knob(tier, f"REFLEX_MAX_HASHTAGS_{label.upper()}")
     tags = trim_tags(post_tags(tier, row), max_tags=max_tags)
     if label.upper() == "X":
@@ -620,7 +621,6 @@ def process_event(raw_evt: dict, *, tier, dedupe: Dedupe, db: ReflexPostsDB | No
                       drought=drought,
                       would_skip=quality_gate(tier, row, drought=drought) or capped,
                       alt=alt_text(row),
-                      past=is_past(tier, row),
                       rendered={lbl: with_cta(tier, lbl, compose_for_channel(tier, lbl, row),
                                                premium_line(tier, row), hook_line(tier, row))
                                 for lbl in preview},
