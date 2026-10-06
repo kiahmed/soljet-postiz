@@ -17,7 +17,8 @@ Posts and comments appear as the app account (u/soljet-postiz-intg).
 ## Setup
 
 From the repo root, after `npx devvit login` once in this folder and setting
-`REDDIT_SUBREDDITS` + `REDDIT_POSTER_KEY` in `.env`:
+`REDDIT_SUBREDDIT` in each product's `tier.config` (the deploy generates
+`REDDIT_POSTER_KEY` in `.env` if it's missing):
 
 ```
 make reddit-deploy PART=--devvit-only     # upload, set key, install on each sub

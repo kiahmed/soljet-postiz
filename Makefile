@@ -56,8 +56,8 @@ postiz-uploads: ## Reload the /uploads volume from postiz-uploads.tar.gz [FILE=<
 # Reddit channel: Reddit no longer issues self-serve Data API keys, so it goes
 # through a Devvit app (reddit-intg/soljet-postiz-intg) that Reddit hosts — a
 # thin post/reply pass-through for every product's poster. Needs
-# `npx devvit login` once, REDDIT_SUBREDDITS + REDDIT_POSTER_KEY in .env.
-reddit-deploy:  ## Upload the Reddit Devvit app, set its key, install on REDDIT_SUBREDDITS (DRY=1 to print) [PART=--devvit-only|--upload-only|--key-only|--install-only]
+# `npx devvit login` once; subs come from each tier.config's REDDIT_SUBREDDIT.
+reddit-deploy:  ## Upload the Reddit Devvit app, set its key, install on every product's REDDIT_SUBREDDIT (DRY=1 to print) [PART=--devvit-only|--upload-only|--key-only|--install-only]
 	@DRY=$(DRY) ./ops/reddit/deploy.sh $(PART)
 
 # ---- stack lifecycle (reuse existing scripts) ----------------------------

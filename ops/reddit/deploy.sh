@@ -11,14 +11,16 @@
 #
 #   --upload-only   build + `devvit upload --bump patch` (new app version)
 #   --key-only      set the app's secret `posterKey` setting from REDDIT_POSTER_KEY
-#   --install-only  install/upgrade the app on every sub in REDDIT_SUBREDDITS
+#   --install-only  install/upgrade the app on every product's REDDIT_SUBREDDIT
 #   --devvit-only   all three, in that order
 #   all             --devvit-only (+ the Cloud Run poster, once it exists)
 #
-# CONFIG (explicit env var > repo-root .env):
-#   REDDIT_SUBREDDITS   comma-separated subs you moderate, eg "arboryx,facades"
-#   REDDIT_POSTER_KEY   shared secret the poster sends as X-Poster-Key
-#                       (generate: openssl rand -hex 32)
+# CONFIG:
+#   REDDIT_SUBREDDIT   per product, in products/**/*tier.config (empty = no
+#                      Reddit). Every non-empty one gets an install.
+#   REDDIT_POSTER_KEY  repo-root .env. Our own shared secret (not from Reddit)
+#                      the poster sends as X-Poster-Key; generated and appended
+#                      to .env on first run if missing.
 #
 # AUTH: whoever `npx devvit login` is logged in as (must moderate each sub).
 # DRY=1 prints every command instead of running it.
@@ -34,8 +36,14 @@ cd "$ROOT"
 envget(){ [ -f .env ] || return 0; grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- \
           | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's/\r$//' -e 's/[[:space:]]*$//'; }
 
-SUBREDDITS="${REDDIT_SUBREDDITS:-$(envget REDDIT_SUBREDDITS)}"
 POSTER_KEY="${REDDIT_POSTER_KEY:-$(envget REDDIT_POSTER_KEY)}"
+
+# Every product's REDDIT_SUBREDDIT, r/-stripped, de-duplicated.
+subreddits(){
+  grep -hE '^REDDIT_SUBREDDIT=' products/*/tier.config products/*/*_tier.config 2>/dev/null \
+    | cut -d= -f2- | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" \
+    | tr -d ' \t\r' | sed 's#^r/##' | grep -v '^$' | sort -u
+}
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 grn(){ printf '\033[32m%s\033[0m\n' "$*"; }
@@ -65,7 +73,11 @@ do_upload(){
 
 do_key(){
   need_node; need_login
-  [ -n "$POSTER_KEY" ] || { red "REDDIT_POSTER_KEY is empty in .env (openssl rand -hex 32)"; exit 1; }
+  if [ -z "$POSTER_KEY" ]; then
+    POSTER_KEY="$(openssl rand -hex 32)"
+    if [ -n "${DRY:-}" ]; then echo "+ append generated REDDIT_POSTER_KEY to .env"
+    else printf '\nREDDIT_POSTER_KEY=%s\n' "$POSTER_KEY" >> .env; grn "generated REDDIT_POSTER_KEY -> .env"; fi
+  fi
   if [ -n "${DRY:-}" ]; then echo "+ (cd $APP && <REDDIT_POSTER_KEY> | npx devvit settings set posterKey)"; return 0; fi
   # The CLI only prompts for the value; feed it on stdin.
   if (cd "$APP" && printf '%s\n' "$POSTER_KEY" | npx devvit settings set posterKey >/dev/null 2>&1); then
@@ -79,12 +91,10 @@ do_key(){
 
 do_install(){
   need_node; need_login
-  [ -n "$SUBREDDITS" ] || { red "REDDIT_SUBREDDITS is empty in .env (eg \"arboryx,facades\")"; exit 1; }
-  local sub rc=0
-  IFS=',' read -ra subs <<< "$SUBREDDITS"
-  for sub in "${subs[@]}"; do
-    sub="$(echo "$sub" | tr -d '[:space:]')"; sub="${sub#r/}"
-    [ -n "$sub" ] || continue
+  local sub rc=0 subs
+  subs="$(subreddits)"
+  [ -n "$subs" ] || { red "no product has REDDIT_SUBREDDIT set (products/**/*tier.config)"; exit 1; }
+  for sub in $subs; do
     # Re-running on an installed sub upgrades it to the latest version.
     if run npx devvit install "$sub"; then grn "installed on r/$sub"; else red "install failed on r/$sub"; rc=1; fi
   done
