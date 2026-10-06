@@ -1,31 +1,25 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "soljet-postiz-intg",
-  "post": {
-    "entrypoints": {
-      "default": {
-        "entry": "splash.html"
-      },
-      "game": {
-        "entry": "game.html"
+  "server": {
+    "externalEndpoints": {
+      "post": {"endpoint": "/external/post", "scopes": ["global"]},
+      "reply": {"endpoint": "/external/reply", "scopes": ["global"]},
+      "comments": {"endpoint": "/external/comments", "scopes": ["global"]}
+    }
+  },
+  "settings": {
+    "global": {
+      "posterKey": {
+        "type": "string",
+        "label": "Poster key",
+        "helpText": "Shared secret the Cloud Run reddit-poster sends as X-Poster-Key.",
+        "isSecret": true
       }
     }
   },
-  "server": {},
-  "menu": {
-    "items": [
-      {
-        "label": "[soljet-postiz-intg] New Post",
-        "description": "Create a new soljet-postiz-intg post.",
-        "location": "subreddit",
-        "endpoint": "/internal/on/menu/new-post"
-      }
-    ]
-  },
-  "triggers": {
-    "onAppInstall": "/internal/on/app/install"
-  },
-  "scripts": {
-    "dev": "npm run watch"
+  "permissions": {
+    "reddit": {"enable": true},
+    "media": true
   }
 }

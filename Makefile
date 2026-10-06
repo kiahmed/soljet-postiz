@@ -9,6 +9,7 @@
         simmer-preflight simmer-e2e simmer-poster simmer-sub-local simmer-serve simmer-event simmer-deploy \
         matrix-preflight matrix-poster matrix-sub-local matrix-serve matrix-event matrix-deploy \
         reflex-preflight reflex-poster reflex-sub-local reflex-serve reflex-event reflex-recap reflex-deploy \
+        reddit-deploy \
         worktree-clean _notmain commit push pr ship
 
 # --- typo guard: reject unknown KEY=val on the command line (not a help section)
@@ -210,6 +211,14 @@ reflex-recap:       ## Post the weekly scorecard now (Cloud Scheduler does it Fr
 
 reflex-deploy:      ## Provision Reflex's Cloud Run + Pub/Sub + recap job on GCP (DRY=1 to print) [PART=--sa-only|--poster-only|--pubsub-only|--recap-only|--sub-local]
 	@DRY=$(DRY) ./ops/reflex/deploy.sh reflex $(PART)
+
+# ---- Reddit (Devvit app; reddit-intg/soljet-postiz-intg) -----------------
+# Reddit's Data API no longer issues self-serve keys, so the Reddit channel
+# goes through a Devvit app Reddit hosts. It's a thin pass-through
+# (/external/post, /external/reply, /external/comments); the poster owns the
+# logic. Needs `npx devvit login` once, REDDIT_SUBREDDITS + REDDIT_POSTER_KEY in .env.
+reddit-deploy:      ## Upload the Devvit app, set its key, install on REDDIT_SUBREDDITS (DRY=1 to print) [PART=--devvit-only|--upload-only|--key-only|--install-only]
+	@DRY=$(DRY) ./ops/reddit/deploy.sh $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,

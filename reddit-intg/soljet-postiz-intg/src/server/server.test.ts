@@ -2,39 +2,61 @@ import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
 import type {AddressInfo, Server} from 'node:net'
 import {after, before, beforeEach, test} from 'node:test'
-import {type Context, redis, runWithContext} from '@devvit/web/server'
 import {
+  type Context,
+  media,
+  reddit,
+  runWithContext,
+  settings,
+} from '@devvit/web/server'
+import {
+  type CommentsRsp,
   Endpoint,
   type ErrorRsp,
-  type GetCounterRsp,
-  type IncCounterReq,
-  type IncCounterRsp,
+  type PostReq,
+  type PostRsp,
+  posterKeyHeader,
+  type ReplyRsp,
 } from '../shared/api.ts'
 import {onReq} from './server.ts'
 
+const key = 'test-key'
 let server: Server
 let serverURL: string
-const redisValues = new Map<string, number>()
-const redisGet = redis.get.bind(redis)
-const redisIncrBy = redis.incrBy.bind(redis)
+let submitted: Record<string, unknown>[] = []
+let posterKey: string | undefined = key
+
+// biome-ignore lint/suspicious/noExplicitAny: test doubles for SDK clients.
+const r = reddit as any
+// biome-ignore lint/suspicious/noExplicitAny: test doubles for SDK clients.
+const s = settings as any
+// biome-ignore lint/suspicious/noExplicitAny: test doubles for SDK clients.
+const m = media as any
 
 before(async () => {
-  redis.get = async key => `${redisValues.get(key) ?? 0}`
-  redis.incrBy = async (key, amount) => {
-    const value = (redisValues.get(key) ?? 0) + amount
-    redisValues.set(key, value)
-    return value
+  s.get = async () => posterKey
+  m.upload = async () => ({mediaId: 'm1', mediaUrl: 'https://i.redd.it/m1'})
+  r.submitPost = async (opts: Record<string, unknown>) => {
+    submitted.push(opts)
+    return {id: 't3_new', url: 'https://reddit.com/x', permalink: '/r/x'}
   }
+  r.submitComment = async () => ({id: 't1_new', permalink: '/r/x/c'})
+  r.getComments = () => ({
+    all: async () => [
+      {
+        id: 't1_a',
+        parentId: 't3_new',
+        authorName: 'someone',
+        body: 'hi',
+        createdAt: new Date(0),
+        score: 2,
+      },
+    ],
+  })
 
   server = createServer(async (req, rsp) => {
-    await runWithContext(
-      {
-        appName: 'soljet-postiz-intg',
-        postId: 't3_123',
-        userId: 't2_123',
-        username: 'username',
-      } as unknown as Context,
-      () => onReq(req, rsp),
+    await runWithContext({appName: 'soljet-postiz-intg'} as Context, () =>
+      onReq(req, rsp),
     )
   })
   await new Promise<void>(resolve => {
@@ -45,42 +67,94 @@ before(async () => {
 })
 
 after(async () => {
-  redis.get = redisGet
-  redis.incrBy = redisIncrBy
   if (!server.listening) return
   await new Promise<void>((resolve, reject) => {
     server.close(err => (err ? reject(err) : resolve()))
   })
 })
 
-beforeEach(() => redisValues.clear())
-
-test('get counter', async () => {
-  const rsp = await fetch(`${serverURL}/${Endpoint.GetCounter}`)
-  assert.equal(rsp.status, 200)
-  assert.equal(rsp.headers.get('Content-Type'), 'application/json')
-  assert.deepEqual<GetCounterRsp>(await rsp.json(), {count: 0})
+beforeEach(() => {
+  submitted = []
+  posterKey = key
 })
 
-test('inc', async () => {
-  const req: IncCounterReq = {amount: 1}
-  const rsp = await fetch(`${serverURL}/${Endpoint.IncCounter}`, {
-    body: JSON.stringify(req),
-    headers: {'Content-Type': 'application/json'},
+function call(endpoint: string, body: unknown, hdrKey = key) {
+  return fetch(`${serverURL}/${endpoint}`, {
+    body: JSON.stringify(body),
+    headers: {'Content-Type': 'application/json', [posterKeyHeader]: hdrKey},
     method: 'POST',
   })
+}
+
+test('text post', async () => {
+  const req: PostReq = {subreddit: 'r/test', title: 'T', body: 'hello'}
+  const rsp = await call(Endpoint.Post, req)
   assert.equal(rsp.status, 200)
-  assert.equal(rsp.headers.get('Content-Type'), 'application/json')
-  assert.deepEqual<IncCounterRsp>(await rsp.json(), {count: 1})
+  assert.deepEqual<PostRsp>(await rsp.json(), {
+    id: 't3_new',
+    url: 'https://reddit.com/x',
+    permalink: '/r/x',
+  })
+  assert.deepEqual(submitted, [
+    {subredditName: 'test', title: 'T', text: 'hello'},
+  ])
 })
 
-test('wrong method', async () => {
-  const rsp = await fetch(`${serverURL}/${Endpoint.IncCounter}`)
-  assert.equal(rsp.status, 404)
-  assert.deepEqual<ErrorRsp>(await rsp.json(), {
-    error: 'not found',
-    status: 404,
+test('image post embeds the image as richtext', async () => {
+  const req: PostReq = {
+    subreddit: 'test',
+    title: 'T',
+    body: 'one\n\ntwo',
+    imageUrl: 'https://storage.googleapis.com/x.png',
+  }
+  const rsp = await call(Endpoint.Post, req)
+  assert.equal(rsp.status, 200)
+  const [opts] = submitted
+  assert.ok(opts?.richtext)
+  assert.equal(opts?.text, undefined)
+})
+
+test('reply', async () => {
+  const rsp = await call(Endpoint.Reply, {parentId: 't3_new', text: 'link'})
+  assert.equal(rsp.status, 200)
+  assert.deepEqual<ReplyRsp>(await rsp.json(), {
+    id: 't1_new',
+    permalink: '/r/x/c',
   })
+})
+
+test('comments', async () => {
+  const rsp = await call(Endpoint.Comments, {postId: 't3_new'})
+  assert.equal(rsp.status, 200)
+  assert.deepEqual<CommentsRsp>(await rsp.json(), {
+    comments: [
+      {
+        id: 't1_a',
+        parentId: 't3_new',
+        author: 'someone',
+        body: 'hi',
+        createdAt: new Date(0).toISOString(),
+        score: 2,
+      },
+    ],
+  })
+})
+
+test('bad poster key', async () => {
+  const rsp = await call(Endpoint.Post, {subreddit: 's', title: 't'}, 'nope')
+  assert.equal(rsp.status, 401)
+  assert.equal(submitted.length, 0)
+})
+
+test('unset poster key fails closed', async () => {
+  posterKey = undefined
+  const rsp = await call(Endpoint.Post, {subreddit: 's', title: 't'})
+  assert.equal(rsp.status, 503)
+})
+
+test('missing title', async () => {
+  const rsp = await call(Endpoint.Post, {subreddit: 's'})
+  assert.equal(rsp.status, 400)
 })
 
 test('404', async () => {
