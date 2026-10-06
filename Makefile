@@ -53,6 +53,13 @@ postiz-import:  ## Restore that export on a new machine [FILE=<path>] [UPLOADS=1
 postiz-uploads: ## Reload the /uploads volume from postiz-uploads.tar.gz [FILE=<path>]
 	@./bin/postiz-data.sh uploads "FILE=$(FILE)"
 
+# Reddit channel: Reddit no longer issues self-serve Data API keys, so it goes
+# through a Devvit app (reddit-intg/soljet-postiz-intg) that Reddit hosts — a
+# thin post/reply pass-through for every product's poster. Needs
+# `npx devvit login` once, REDDIT_SUBREDDITS + REDDIT_POSTER_KEY in .env.
+reddit-deploy:  ## Upload the Reddit Devvit app, set its key, install on REDDIT_SUBREDDITS (DRY=1 to print) [PART=--devvit-only|--upload-only|--key-only|--install-only]
+	@DRY=$(DRY) ./ops/reddit/deploy.sh $(PART)
+
 # ---- stack lifecycle (reuse existing scripts) ----------------------------
 deploy:         ## Pull images + start the whole stack, wait for health
 	./deploy.sh
@@ -211,14 +218,6 @@ reflex-recap:       ## Post the weekly scorecard now (Cloud Scheduler does it Fr
 
 reflex-deploy:      ## Provision Reflex's Cloud Run + Pub/Sub + recap job on GCP (DRY=1 to print) [PART=--sa-only|--poster-only|--pubsub-only|--recap-only|--sub-local]
 	@DRY=$(DRY) ./ops/reflex/deploy.sh reflex $(PART)
-
-# ---- Reddit (Devvit app; reddit-intg/soljet-postiz-intg) -----------------
-# Reddit's Data API no longer issues self-serve keys, so the Reddit channel
-# goes through a Devvit app Reddit hosts. It's a thin pass-through
-# (/external/post, /external/reply, /external/comments); the poster owns the
-# logic. Needs `npx devvit login` once, REDDIT_SUBREDDITS + REDDIT_POSTER_KEY in .env.
-reddit-deploy:      ## Upload the Devvit app, set its key, install on REDDIT_SUBREDDITS (DRY=1 to print) [PART=--devvit-only|--upload-only|--key-only|--install-only]
-	@DRY=$(DRY) ./ops/reddit/deploy.sh $(PART)
 
 # ---- daily scheduler (local cron OR GCP Cloud Scheduler) -----------------
 # Backend is chosen by GCP_PROD_SCHEDULER in .env (disabled=local supercronic,
