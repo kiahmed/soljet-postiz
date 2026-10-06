@@ -8,6 +8,7 @@
     "build": "npm run build:client -- --metafile=dist/client.meta.json --minify && npm run build:server -- --metafile=dist/server.meta.json --minify",
     "build:client": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=esm --outdir=public --platform=browser src/client/splash.ts src/client/game.ts",
     "build:server": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=cjs --outdir=dist/server --platform=node src/server/index.ts",
+    "dev": "devvit playtest",
     "clean": "rm -rf dist/ public/*.js*",
     "format": "npm run lint -- --fix",
     "lint": "biome check --error-on-warnings",
@@ -20,9 +21,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
-    "@devvit/web": "^0.13.5",
+    "@devvit/web": "0.14.7",
     "@types/node": "24.19.0",
-    "devvit": "^1.0.0",
+    "devvit": "0.14.7",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   },
