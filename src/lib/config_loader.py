@@ -116,6 +116,9 @@ class Tier:
     # Per-channel imagery policy, keyed by lowercased channel name
     # ("x", "linkedin"): "link_card" | "attach". Absent channel → legacy behavior.
     imagery_policy: dict = field(default_factory=dict)
+    # Subreddit for the Reddit channel (Devvit app, not Postiz), without r/.
+    # Branch with an empty REDDIT_SUBREDDIT inherits the parent's. None = no Reddit.
+    reddit_subreddit: str | None = None
 
 
 def _parse_config(path: Path) -> dict:
@@ -223,6 +226,10 @@ def load_tier(tier_id: str) -> Tier:
         purpose=raw.get("POSTING_PURPOSE", ""),
         sectors=sectors,
         imagery_policy=imagery_policy,
+        reddit_subreddit=(
+            re.sub(r"^r/", "", raw.get("REDDIT_SUBREDDIT", ""), flags=re.I).lower()
+            or (parent.reddit_subreddit if parent else None)
+        ),
     )
 
 

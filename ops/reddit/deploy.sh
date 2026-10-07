@@ -43,7 +43,7 @@ POSTER_KEY="${REDDIT_POSTER_KEY:-$(envget REDDIT_POSTER_KEY)}"
 
 # Every product's REDDIT_SUBREDDIT, r/-stripped, lowercased, de-duplicated.
 subreddits(){
-  grep -hE '^REDDIT_SUBREDDIT=' products/*/tier.config products/*/*_tier.config 2>/dev/null \
+  find products -name '*tier.config' -exec grep -hE '^REDDIT_SUBREDDIT=' {} + 2>/dev/null \
     | cut -d= -f2- | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" \
     | tr -d ' \t\r' | sed 's#^[rR]/##' | tr '[:upper:]' '[:lower:]' | grep -v '^$' | sort -u
 }
