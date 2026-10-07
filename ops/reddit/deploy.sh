@@ -35,6 +35,14 @@ ROOT="$(cd "$DIR/../.." && pwd)"
 APP="$ROOT/reddit-intg/soljet-postiz-intg"
 cd "$ROOT"
 
+# WSL: node loading the CLI's ~8k module files from /mnt/c (the Windows drive)
+# takes minutes per devvit command. Run from a mirror on the Linux filesystem
+# instead (seconds); the repo copy stays the source of truth.
+SRC_APP="$APP"
+case "$SRC_APP" in
+  /mnt/*) APP="${REDDIT_DEVVIT_WORKDIR:-$HOME/.cache/soljet-postiz/devvit-app}" ;;
+esac
+
 # Same helper shape as ops/reflex/deploy.sh::envget.
 envget(){ [ -f .env ] || return 0; grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- \
           | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" -e 's/\r$//' -e 's/[[:space:]]*$//'; }
@@ -52,11 +60,23 @@ red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 grn(){ printf '\033[32m%s\033[0m\n' "$*"; }
 run(){ if [ -n "${DRY:-}" ]; then echo "+ (cd $APP && $*)"; else (cd "$APP" && "$@"); fi; }
 
+SYNCED=""
 need_node(){
   command -v node >/dev/null || { red "node not found (need >=22; .nvmrc pins 24)"; exit 1; }
-  if [ ! -x "$APP/node_modules/.bin/devvit" ]; then
-    run npm ci || { red "npm ci failed in $APP"; exit 1; }
+  [ -n "$SYNCED" ] && return 0
+  if [ "$APP" != "$SRC_APP" ]; then
+    if [ -n "${DRY:-}" ]; then echo "+ rsync $SRC_APP/ -> $APP/ (Linux-FS mirror)"
+    else
+      mkdir -p "$APP" && rsync -a --delete --exclude node_modules --exclude dist "$SRC_APP"/ "$APP"/ \
+        || { red "couldn't mirror the app to $APP"; exit 1; }
+    fi
   fi
+  # (Re)install when deps are missing or package-lock.json changed since last install.
+  if [ ! -x "$APP/node_modules/.bin/devvit" ] || ! cmp -s "$APP/package-lock.json" "$APP/node_modules/.deploy-lock"; then
+    run npm ci --no-audit --no-fund || { red "npm ci failed in $APP"; exit 1; }
+    [ -n "${DRY:-}" ] || cp "$APP/package-lock.json" "$APP/node_modules/.deploy-lock"
+  fi
+  SYNCED=1
 }
 
 need_login(){
