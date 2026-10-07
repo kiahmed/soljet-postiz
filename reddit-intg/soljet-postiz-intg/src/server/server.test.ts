@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {createServer} from 'node:http'
+import {createServer, type IncomingMessage} from 'node:http'
 import type {AddressInfo, Server} from 'node:net'
 import {after, before, beforeEach, test} from 'node:test'
 import {
@@ -18,13 +18,15 @@ import {
   posterKeyHeader,
   type ReplyRsp,
 } from '../shared/api.ts'
-import {onReq} from './server.ts'
+import {checkPosterKey, maxBodyBytes, onReq} from './server.ts'
 
 const key = 'test-key'
 let server: Server
 let serverURL: string
 let submitted: Record<string, unknown>[] = []
 let posterKey: string | undefined = key
+let allowedSubs: string | undefined = 'test, r/Arboryx'
+let submitFail = false
 
 // biome-ignore lint/suspicious/noExplicitAny: test doubles for SDK clients.
 const r = reddit as any
@@ -34,9 +36,11 @@ const s = settings as any
 const m = media as any
 
 before(async () => {
-  s.get = async () => posterKey
+  s.get = async (name: string) =>
+    name === 'posterKey' ? posterKey : allowedSubs
   m.upload = async () => ({mediaId: 'm1', mediaUrl: 'https://i.redd.it/m1'})
   r.submitPost = async (opts: Record<string, unknown>) => {
+    if (submitFail) throw Error('boom; internal detail')
     submitted.push(opts)
     return {id: 't3_new', url: 'https://reddit.com/x', permalink: '/r/x'}
   }
@@ -76,6 +80,8 @@ after(async () => {
 beforeEach(() => {
   submitted = []
   posterKey = key
+  allowedSubs = 'test, r/Arboryx'
+  submitFail = false
 })
 
 function call(endpoint: string, body: unknown, hdrKey = key) {
@@ -164,4 +170,71 @@ test('404', async () => {
     error: 'not found',
     status: 404,
   })
+})
+
+test('missing poster key header', async () => {
+  const rsp = await fetch(`${serverURL}/${Endpoint.Post}`, {
+    body: JSON.stringify({subreddit: 'test', title: 't'}),
+    headers: {'Content-Type': 'application/json'},
+    method: 'POST',
+  })
+  assert.equal(rsp.status, 401)
+  assert.equal(submitted.length, 0)
+})
+
+test('array-valued poster key header', async () => {
+  const req = {headers: {[posterKeyHeader]: [key, key]}}
+  await assert.rejects(
+    checkPosterKey(req as unknown as IncomingMessage),
+    (err: Error & {status?: number}) => err.status === 401,
+  )
+})
+
+test('unexpected errors return a generic 500 body', async () => {
+  submitFail = true
+  const rsp = await call(Endpoint.Post, {subreddit: 'test', title: 't'})
+  assert.equal(rsp.status, 500)
+  assert.deepEqual<ErrorRsp>(await rsp.json(), {
+    error: 'server error',
+    status: 500,
+  })
+})
+
+test('allowed subreddit is normalized', async () => {
+  const rsp = await call(Endpoint.Post, {subreddit: 'r/ARBORYX', title: 't'})
+  assert.equal(rsp.status, 200)
+  assert.equal(submitted[0]?.subredditName, 'arboryx')
+})
+
+test('disallowed subreddit', async () => {
+  const rsp = await call(Endpoint.Post, {subreddit: 'r/other', title: 't'})
+  assert.equal(rsp.status, 403)
+  assert.equal(submitted.length, 0)
+})
+
+test('unset allowedSubreddits fails closed', async () => {
+  for (const value of [undefined, '', ' , ']) {
+    allowedSubs = value
+    const rsp = await call(Endpoint.Post, {subreddit: 'test', title: 't'})
+    assert.equal(rsp.status, 503)
+    assert.deepEqual<ErrorRsp>(await rsp.json(), {
+      error: 'allowedSubreddits setting is not configured',
+      status: 503,
+    })
+  }
+  assert.equal(submitted.length, 0)
+})
+
+test('oversized body', async () => {
+  const rsp = await call(Endpoint.Post, {
+    subreddit: 'test',
+    title: 't',
+    body: 'x'.repeat(maxBodyBytes + 1),
+  })
+  assert.equal(rsp.status, 413)
+  assert.deepEqual<ErrorRsp>(await rsp.json(), {
+    error: 'body too large',
+    status: 413,
+  })
+  assert.equal(submitted.length, 0)
 })

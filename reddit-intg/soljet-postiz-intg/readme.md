@@ -12,7 +12,10 @@ setting). See `src/shared/api.ts` for the request/response shapes.
 | `/external/reply`    | Comment on a post (`t3_`) or reply to a comment (`t1_`) |
 | `/external/comments` | Newest comments on a post, for the poster to answer     |
 
-Posts and comments appear as the app account (u/soljet-postiz-intg).
+Posts and comments appear as the app account (u/soljet-postiz-intg). Posts
+only go to subs in the `allowedSubreddits` setting, which `make reddit-deploy`
+builds from every product's `REDDIT_SUBREDDIT`; with it or `posterKey` unset
+the app refuses every request (503).
 
 ## Setup
 

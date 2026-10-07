@@ -11,8 +11,11 @@
 #
 #   --upload-only   build + `devvit upload --bump patch` (new app version)
 #   --key-only      set the app's secret `posterKey` setting from REDDIT_POSTER_KEY
-#   --install-only  install/upgrade the app on every product's REDDIT_SUBREDDIT
-#   --devvit-only   all three, in that order
+#   --allow-only    set the app's `allowedSubreddits` setting (the only subs it
+#                   will post to) from every product's REDDIT_SUBREDDIT
+#   --install-only  refresh allowedSubreddits, then install/upgrade the app on
+#                   every product's REDDIT_SUBREDDIT
+#   --devvit-only   upload, key, allow, install — in that order
 #   all             --devvit-only (+ the Cloud Run poster, once it exists)
 #
 # CONFIG:
@@ -38,11 +41,11 @@ envget(){ [ -f .env ] || return 0; grep -E "^$1=" .env 2>/dev/null | tail -1 | c
 
 POSTER_KEY="${REDDIT_POSTER_KEY:-$(envget REDDIT_POSTER_KEY)}"
 
-# Every product's REDDIT_SUBREDDIT, r/-stripped, de-duplicated.
+# Every product's REDDIT_SUBREDDIT, r/-stripped, lowercased, de-duplicated.
 subreddits(){
   grep -hE '^REDDIT_SUBREDDIT=' products/*/tier.config products/*/*_tier.config 2>/dev/null \
     | cut -d= -f2- | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" \
-    | tr -d ' \t\r' | sed 's#^r/##' | grep -v '^$' | sort -u
+    | tr -d ' \t\r' | sed 's#^[rR]/##' | tr '[:upper:]' '[:lower:]' | grep -v '^$' | sort -u
 }
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
@@ -89,6 +92,25 @@ do_key(){
   fi
 }
 
+do_allow(){
+  need_node; need_login
+  local allowed
+  allowed="$(subreddits | paste -sd, -)"
+  if [ -z "$allowed" ]; then
+    red "every product's REDDIT_SUBREDDIT is empty (products/**/*tier.config) — nothing would be allowed"
+    exit 1
+  fi
+  if [ -n "${DRY:-}" ]; then echo "+ (cd $APP && echo '$allowed' | npx devvit settings set allowedSubreddits)"; return 0; fi
+  # The CLI only prompts for the value; feed it on stdin, never on argv.
+  if (cd "$APP" && printf '%s\n' "$allowed" | npx devvit settings set allowedSubreddits >/dev/null 2>&1); then
+    grn "allowedSubreddits set: $allowed"
+  else
+    red "couldn't set allowedSubreddits non-interactively — run it by hand and paste: $allowed"
+    echo "    (cd $APP && npx devvit settings set allowedSubreddits)"
+    exit 1
+  fi
+}
+
 do_install(){
   need_node; need_login
   local sub rc=0 subs
@@ -104,9 +126,10 @@ do_install(){
 case "$MODE" in
   --upload-only)  do_upload ;;
   --key-only)     do_key ;;
-  --install-only) do_install ;;
+  --allow-only)   do_allow ;;
+  --install-only) do_allow && do_install ;;
   --devvit-only|all)
-    do_upload && do_key && do_install || exit 1
+    do_upload && do_key && do_allow && do_install || exit 1
     if [ "$MODE" = all ]; then echo "note: Cloud Run reddit-poster isn't built yet — Devvit app only."; fi
     ;;
   *) red "unknown part: $MODE"; exit 2 ;;

@@ -15,6 +15,11 @@
         "label": "Poster key",
         "helpText": "Shared secret the Cloud Run reddit-poster sends as X-Poster-Key.",
         "isSecret": true
+      },
+      "allowedSubreddits": {
+        "type": "string",
+        "label": "Allowed subreddits",
+        "helpText": "Comma-separated subs the poster may post to (no r/). Set by make reddit-deploy from each product's REDDIT_SUBREDDIT."
       }
     }
   },

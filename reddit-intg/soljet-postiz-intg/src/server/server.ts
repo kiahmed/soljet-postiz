@@ -1,4 +1,4 @@
-import {once} from 'node:events'
+import {createHash, timingSafeEqual} from 'node:crypto'
 import type {IncomingMessage, ServerResponse} from 'node:http'
 import {RichTextBuilder} from '@devvit/shared-types/richtext/RichTextBuilder.js'
 import {media, reddit, settings} from '@devvit/web/server'
@@ -33,13 +33,22 @@ export async function onReq(
   try {
     await route(reqMsg, rspMsg)
   } catch (err) {
-    const status = err instanceof HttpError ? err.status : 500
-    const msg =
-      err instanceof HttpError
-        ? err.message
-        : `server error; ${err instanceof Error ? err.stack : err}`
-    if (status === 500) console.error(msg)
-    writeJson<ErrorRsp>(status, {error: msg, status}, rspMsg)
+    if (err instanceof HttpError) {
+      if (err.status === 413) {
+        // Unread body left on the socket: close it once the reply is out.
+        rspMsg.setHeader('Connection', 'close')
+        rspMsg.once('finish', () => reqMsg.destroy())
+      }
+      writeJson<ErrorRsp>(
+        err.status,
+        {error: err.message, status: err.status},
+        rspMsg,
+      )
+      return
+    }
+    // Log the detail, but never hand stack traces to the caller.
+    console.error(`server error; ${err instanceof Error ? err.stack : err}`)
+    writeJson<ErrorRsp>(500, {error: 'server error', status: 500}, rspMsg)
   }
 }
 
@@ -77,18 +86,41 @@ async function route(
 }
 
 /** Reject callers without the shared `posterKey`; fail closed when unset. */
-async function checkPosterKey(reqMsg: IncomingMessage): Promise<void> {
+export async function checkPosterKey(reqMsg: IncomingMessage): Promise<void> {
   const want = await settings.get<string>('posterKey')
   if (!want) throw new HttpError(503, 'posterKey setting is not configured')
-  if (reqMsg.headers[posterKeyHeader] !== want)
+  const got = reqMsg.headers[posterKeyHeader]
+  // Missing or repeated header fails; hash both sides so the constant-time
+  // compare sees equal-length buffers whatever the caller sent.
+  if (typeof got !== 'string' || !timingSafeEqual(sha256(got), sha256(want)))
     throw new HttpError(401, 'bad poster key')
+}
+
+function sha256(s: string): Buffer {
+  return createHash('sha256').update(s).digest()
+}
+
+function normSubreddit(s: string): string {
+  return s.trim().replace(/^r\//i, '').toLowerCase()
+}
+
+/** Only subs in the `allowedSubreddits` setting; fail closed when unset. */
+async function checkSubreddit(subreddit: string): Promise<string> {
+  const list = (await settings.get<string>('allowedSubreddits')) ?? ''
+  const allowed = new Set(list.split(',').map(normSubreddit).filter(Boolean))
+  if (!allowed.size)
+    throw new HttpError(503, 'allowedSubreddits setting is not configured')
+  const sub = normSubreddit(subreddit)
+  if (!allowed.has(sub))
+    throw new HttpError(403, `subreddit not allowed: ${sub}`)
+  return sub
 }
 
 export async function routePost(req: PostReq): Promise<PostRsp> {
   if (!req.subreddit || !req.title)
     throw new HttpError(400, 'subreddit and title are required')
   const common = {
-    subredditName: req.subreddit.replace(/^r\//, ''),
+    subredditName: await checkSubreddit(req.subreddit),
     title: req.title,
     ...(req.flairId ? {flairId: req.flairId} : {}),
     ...(req.nsfw ? {nsfw: true} : {}),
@@ -143,12 +175,29 @@ export async function routeComments(req: CommentsReq): Promise<CommentsRsp> {
   }
 }
 
+export const maxBodyBytes = 1024 * 1024
+
 async function readJson<T>(reqMsg: IncomingMessage): Promise<T> {
-  const chunks: Uint8Array[] = []
-  reqMsg.on('data', chunk => chunks.push(chunk))
-  await once(reqMsg, 'end')
+  const body = await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length
+      if (size > maxBodyBytes) {
+        // Stop accumulating; onReq answers 413 then destroys the request.
+        reqMsg.off('data', onData)
+        reqMsg.pause()
+        reject(new HttpError(413, 'body too large'))
+        return
+      }
+      chunks.push(chunk)
+    }
+    reqMsg.on('data', onData)
+    reqMsg.once('end', () => resolve(Buffer.concat(chunks)))
+    reqMsg.once('error', reject)
+  })
   try {
-    return JSON.parse(`${Buffer.concat(chunks)}`)
+    return JSON.parse(`${body}`)
   } catch {
     throw new HttpError(400, 'body must be JSON')
   }
