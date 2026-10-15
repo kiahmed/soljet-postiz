@@ -50,6 +50,10 @@ if ! flock -n 9; then log "another catch-up is running — skipping"; exit 0; fi
 NOW="${CATCHUP_NOW:-$(date +%H:%M)}"
 NOW_H="${NOW%%:*}"; NOW_M="${NOW##*:}"
 NOW_MIN=$((10#$NOW_H * 60 + 10#$NOW_M))
+# Periodic (watchdog) runs wait this long past a fire time before calling it
+# missed — the real trigger/cron call lands seconds after the minute and must
+# not race a catch-up into a double post. Boot catch-up needs no grace.
+GRACE=0; [ "$MODE" = "watchdog" ] && GRACE="${CATCHUP_GRACE_MIN:-10}"
 
 # channel -> Postiz providerIdentifier
 provider_of() {
@@ -59,13 +63,20 @@ provider_of() {
   esac
 }
 
-# Posts a provider PUBLISHED today (empty on any DB trouble -> caller skips).
+# Posts this tier's integration ATTEMPTED today — PUBLISHED or ERROR (empty on
+# any DB trouble -> caller skips). ERROR counts as attempted on purpose: a fire
+# that ran and failed is reported by watchdog.py, not retried here (one try
+# only; it also stops a dead channel like X-with-no-credits being re-fired
+# every cycle). Scoped to the Arboryx integration so Matrix/Simmer posts on the
+# same provider can't mask a missed Arboryx fire.
 published_today() {
   docker exec "${POSTIZ_PG_CONTAINER:-postiz-postgres}" psql \
     -U "${POSTIZ_PG_USER:-postiz-user}" -d "${POSTIZ_PG_DB:-postiz-db-local}" -t -A -c \
     "select count(*) from \"Post\" p join \"Integration\" i on i.id=p.\"integrationId\"
-     where i.\"providerIdentifier\"='$1' and p.state='PUBLISHED'
-       and p.\"createdAt\"::date=current_date;" 2>/dev/null | tr -d '[:space:]'
+     where i.\"providerIdentifier\"='$1' and i.name='${CATCHUP_INTEGRATION_NAME:-Arboryx.ai}'
+       and p.state in ('PUBLISHED','ERROR') and p.\"deletedAt\" is null
+       and p.\"parentPostId\" is null
+       and (p.\"createdAt\" at time zone 'UTC' at time zone '${TZ:-UTC}')::date='$(date +%F)';" 2>/dev/null | tr -d '[:space:]'
 }
 
 fake_count() {  # CATCHUP_COUNTS="linkedin=2,x=0"
@@ -93,7 +104,7 @@ sched_rows | while IFS=$'\t' read -r channel count delay tier kind cron; do
   due=0
   for h in ${hours//,/ }; do
     fire_min=$((10#$h * 60 + 10#$cmin))
-    [ "$fire_min" -le "$NOW_MIN" ] && due=$((due + count))
+    [ $((fire_min + GRACE)) -le "$NOW_MIN" ] && due=$((due + count))
   done
   [ "$due" -eq 0 ] && { log "$channel: no fires due yet today"; continue; }
 

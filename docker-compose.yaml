@@ -266,7 +266,10 @@ services:
       context: .
       dockerfile: ops/scheduler/Dockerfile
     container_name: postiz-scheduler-trigger
-    profiles: ["scheduler-gcp"]
+    # No `profiles:` gate on purpose — it also hosts watchdog.py (failure emails
+    # + missed-post catch-up for every product), so it must come up with the
+    # stack on every plain `docker compose up -d` rather than wait for someone
+    # to start it by hand. `restart: unless-stopped` covers docker restarts.
     restart: unless-stopped
     # tini as PID 1 — reaps the make/docker children run-daily.sh spawns.
     init: true
