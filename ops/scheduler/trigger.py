@@ -134,6 +134,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # Failure-alert + missed-post watchdog for every product (see watchdog.py).
+    import threading
+    sys.path.insert(0, HERE)
+    import watchdog
+    threading.Thread(target=watchdog.loop, name="watchdog", daemon=True).start()
     port = int(os.environ.get("SCHEDULER_TRIGGER_PORT", "8090"))
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     sys.stderr.write(f"[trigger] listening on :{port}  (repo={REPO})\n")
