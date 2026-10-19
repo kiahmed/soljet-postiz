@@ -343,20 +343,22 @@ def _og_graph_image(tier: Tier, card_id: str, ctx: dict) -> Path | None:
         return None
     # The graph URL is stable per card_id and the object is overwritten in
     # place on every re-render, so a URL-keyed cache serves stale images
-    # forever (ROB-101726-005 went out edge-less). Key on the GCS generation
-    # instead: a re-render = new generation = new filename = fresh download.
-    # No generation (GCS unreachable) -> bypass the cache entirely rather than
-    # risk a stale hit; the download itself is cheap.
+    # forever (ROB-101726-005 went out edge-less). Key on the GCS generation,
+    # and read the bytes from GCS pinned to that generation (not the cacheable
+    # public URL). GCS unreachable -> fall back to the URL, never cached.
     base = f"graph_og_{_hash(url)}"
-    gen = card_images.graph_generation(tier, card_id)
+    blob = card_images.graph_blob(tier, card_id)
+    gen, fetch = blob if blob else (None, None)
     out = CACHE_DIR / f"{base}_{gen or 'nogen'}.png"
     if gen and out.exists() and out.stat().st_size > 1000:
         return out
     try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "arboryx-daily/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
+        data = fetch() if fetch else None
+        if data is None:
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "arboryx-daily/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
         if not (data[:8].startswith(b"\x89PNG") or data[:2] == b"\xff\xd8"):
             return None  # not a real image (e.g. a "not found" html body)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)

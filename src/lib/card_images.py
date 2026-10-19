@@ -123,20 +123,26 @@ def png_dir(tier) -> Path | None:
     return Path(env) if env else resolved   # nonexistent → treated as "no dir"
 
 
-def graph_generation(tier, card_id: str) -> str | None:
-    """GCS object generation of this card's graph PNG, or None on any failure.
-    catalyst-knowledge-graph overwrites graphs/<card_id>.png in place on every
-    re-render (same URL, no cache-buster — soljet_postiz_posters_updates.md,
-    2026-10-19), so the generation number is the only signal that the image
-    changed. Changes whenever the object is rewritten; never cached here."""
+def graph_blob(tier, card_id: str):
+    """(generation, fetch) for this card's graph in GCS, or None on any failure;
+    fetch() returns the PNG bytes (call it only on a cache miss). catalyst-knowledge-graph overwrites graphs/<card_id>.png in
+    place on every re-render with no cache-buster (soljet_postiz_posters_
+    updates.md, 2026-10-19), so the generation is the only signal the image
+    changed. The bytes are read FROM GCS pinned to that exact generation
+    (if_generation_match) rather than from the public /graph-img/ URL, whose
+    `Cache-Control: max-age=3600` could let any shared cache hand back the
+    previous render and get it stored under the NEW generation's filename."""
     cfg = _gcs_config(tier, "graphs")
     if not cfg or not card_id:
         return None
     try:
         from google.cloud import storage
         blob = storage.Client().bucket(cfg[0]).get_blob(f"{cfg[1]}/{card_id}.png")
-        return str(blob.generation) if blob else None
-    except Exception:  # noqa: BLE001 — caller falls back to always re-downloading
+        if not blob:
+            return None
+        gen = blob.generation
+        return str(gen), lambda: blob.download_as_bytes(if_generation_match=gen)
+    except Exception:  # noqa: BLE001 — caller falls back to the public URL, uncached
         return None
 
 
