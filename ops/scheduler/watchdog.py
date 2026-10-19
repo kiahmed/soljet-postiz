@@ -25,6 +25,7 @@ import json
 import os
 import re
 import smtplib
+import ssl
 import subprocess
 import sys
 import time
@@ -157,14 +158,17 @@ def _send(env, to, subject, body):
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    # Verify the server cert + hostname: without a context smtplib skips both,
+    # letting an on-path attacker capture the SMTP password.
+    ctx = ssl.create_default_context()
     if _truthy(_cfg(env, "SMTP_USE_SSL", "false")):
-        with smtplib.SMTP_SSL(host, port, timeout=30) as s:
+        with smtplib.SMTP_SSL(host, port, timeout=30, context=ctx) as s:
             s.login(user, pw)
             s.send_message(msg)
     else:
         with smtplib.SMTP(host, port, timeout=30) as s:
             if _truthy(_cfg(env, "SMTP_STARTTLS", "true")):
-                s.starttls()
+                s.starttls(context=ctx)
             s.login(user, pw)
             s.send_message(msg)
 
