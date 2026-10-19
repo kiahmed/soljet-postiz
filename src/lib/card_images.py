@@ -123,6 +123,23 @@ def png_dir(tier) -> Path | None:
     return Path(env) if env else resolved   # nonexistent → treated as "no dir"
 
 
+def graph_generation(tier, card_id: str) -> str | None:
+    """GCS object generation of this card's graph PNG, or None on any failure.
+    catalyst-knowledge-graph overwrites graphs/<card_id>.png in place on every
+    re-render (same URL, no cache-buster — soljet_postiz_posters_updates.md,
+    2026-10-19), so the generation number is the only signal that the image
+    changed. Changes whenever the object is rewritten; never cached here."""
+    cfg = _gcs_config(tier, "graphs")
+    if not cfg or not card_id:
+        return None
+    try:
+        from google.cloud import storage
+        blob = storage.Client().bucket(cfg[0]).get_blob(f"{cfg[1]}/{card_id}.png")
+        return str(blob.generation) if blob else None
+    except Exception:  # noqa: BLE001 — caller falls back to always re-downloading
+        return None
+
+
 def has_render(tier, card_id: str) -> bool:
     """True if this card's PNG exists. GCS (production) takes priority over the
     local dev directory when both are configured. False for tiers with no

@@ -341,8 +341,16 @@ def _og_graph_image(tier: Tier, card_id: str, ctx: dict) -> Path | None:
         url = template.format(card_id=card_id)
     except (KeyError, IndexError):
         return None
-    out = CACHE_DIR / f"graph_og_{_hash(url)}.png"
-    if out.exists() and out.stat().st_size > 1000:
+    # The graph URL is stable per card_id and the object is overwritten in
+    # place on every re-render, so a URL-keyed cache serves stale images
+    # forever (ROB-101726-005 went out edge-less). Key on the GCS generation
+    # instead: a re-render = new generation = new filename = fresh download.
+    # No generation (GCS unreachable) -> bypass the cache entirely rather than
+    # risk a stale hit; the download itself is cheap.
+    base = f"graph_og_{_hash(url)}"
+    gen = card_images.graph_generation(tier, card_id)
+    out = CACHE_DIR / f"{base}_{gen or 'nogen'}.png"
+    if gen and out.exists() and out.stat().st_size > 1000:
         return out
     try:
         import urllib.request
@@ -352,6 +360,9 @@ def _og_graph_image(tier: Tier, card_id: str, ctx: dict) -> Path | None:
         if not (data[:8].startswith(b"\x89PNG") or data[:2] == b"\xff\xd8"):
             return None  # not a real image (e.g. a "not found" html body)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        for old in CACHE_DIR.glob(f"{base}*.png"):  # stale generations + legacy un-versioned file
+            if old != out:
+                old.unlink(missing_ok=True)
         out.write_bytes(data)
         return out
     except Exception:  # noqa: BLE001 — degrade to card-only attach
