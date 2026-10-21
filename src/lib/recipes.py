@@ -250,6 +250,13 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
         get_insights = getattr(src, "graph_insights", None)
         insights = get_insights() if callable(get_insights) else []
         if insights:
+            # One digest per ISO week per channel: without this, a second fire
+            # the same week (manual re-run, catch-up, double trigger) would
+            # pick the NEXT fresh subjects — the first run's are on cooldown —
+            # and publish a second, different digest.
+            if posted_log.is_posted("graph_stats", source_id, insights_tkey(tier.id, channel)):
+                raise KeyError(f"tier '{tier.id}': this week's digest ({week}) already posted "
+                               f"on {channel or 'all'}")
             # Weekly digest: the strongest few takeaways, subjects on a
             # cooldown so the same entity isn't re-featured week after week.
             picked = pick_digest(insights, insights_seen(tier.id, channel))

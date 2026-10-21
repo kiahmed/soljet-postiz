@@ -96,11 +96,15 @@ def main() -> int:
             continue
         state, url, err = daily.poll_publish(pid)
         print(f"[{lbl}] {state} {url or err}")
-        if state == "PUBLISHED":  # record the featured subjects -> 21-day cooldown
+        # Record on PUBLISHED, and also on QUEUE (Postiz accepted it, poll just
+        # timed out): that one may still publish later, and not recording it
+        # would let next week re-feature the same subjects. Only a confirmed
+        # ERROR (or a create_post that never got accepted) leaves it unrecorded.
+        if state in ("PUBLISHED", "QUEUE"):  # featured subjects -> 21-day cooldown
             posted_log.mark_posted(
                 source_type=bundle.source_type, source_id=bundle.source_id,
                 tier=insights_tkey(tier.id, lbl), mode="now", text=bundle.text,
-                integration_ids=[iid], postiz_post_id=url,
+                integration_ids=[iid], postiz_post_id=pid,
                 response={"channels": [{"channel": lbl, "state": state, "url": url}],
                           "keys": keys})
     return 0

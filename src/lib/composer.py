@@ -706,6 +706,18 @@ def _digest_hashtags(picked: list[dict], sector: str) -> list[str]:
     return out[:5]
 
 
+def _clean_headline(h: str, max_len: int = 200) -> str:
+    """Headlines are KG-authored and quoted verbatim — but this goes to public
+    accounts, so strip what could act on its own: an '@Someone' would tag a
+    real account, a URL would post a link (card text already strips trailing
+    links; the digest had no equivalent). Normal headlines pass through
+    unchanged."""
+    h = re.sub(r"https?://\S+", "", h or "")
+    h = re.sub(r"(?<!\w)@\w+", "", h)
+    h = re.sub(r"\s+", " ", h).strip()
+    return h if len(h) <= max_len else h[: max_len - 1].rstrip() + "…"
+
+
 def compose_graph_digest(tier: Tier, picked: list[dict], *, sector: str = "",
                          now: datetime | None = None) -> str:
     """The weekly 'what moved in the sector' post. DETERMINISTIC, no LLM:
@@ -718,6 +730,8 @@ def compose_graph_digest(tier: Tier, picked: list[dict], *, sector: str = "",
     sec = f"{sector.title()} " if sector else ""
     lines = [f"📈 {sec}graph signal · week of {monday.strftime('%b')} {monday.day}", ""]
     for i in picked:
-        lines.append(f"{'🔺' if i.get('type') == 'chokepoint' else '📈'} {i['headline']}")
+        h = _clean_headline(i["headline"])
+        if h:
+            lines.append(f"{'🔺' if i.get('type') == 'chokepoint' else '📈'} {h}")
     tags = " ".join(_digest_hashtags(picked, sector))
     return "\n".join(lines) + f"\n\n{tags}\n\nWhere the connections are clustering ↓"

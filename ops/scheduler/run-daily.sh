@@ -93,7 +93,9 @@ make heal || echo "[warn] heal returned non-zero — continuing; daily.py will f
 if [ "$KIND" = "insights" ]; then
   # Weekly sector digest: one post per fire, no backlog to drain, so COUNT/
   # DELAY/OLDEST/READY don't apply (bin/graph_stats_post.py).
-  make insights-post TIER="$TIER" ${CHANNEL:+CHANNEL="$CHANNEL"}
+  INS_ARGS=(TIER="$TIER")
+  [ -n "$CHANNEL" ] && INS_ARGS+=(CHANNEL="$CHANNEL")
+  make insights-post "${INS_ARGS[@]}"
 else
   make post "${POST_ARGS[@]}"
 fi
