@@ -103,8 +103,8 @@ class Handler(BaseHTTPRequestHandler):
         channels = _load_channels()
         channel = str(payload.get("channel", "")).strip()
         kind = str(payload.get("kind", "card")).strip() or "card"
-        if kind not in ("card", "graph"):
-            return self._reply(400, f"bad kind {kind!r}; must be 'card' or 'graph'")
+        if kind not in ("card", "graph", "insights"):
+            return self._reply(400, f"bad kind {kind!r}; must be 'card', 'graph' or 'insights'")
         if (channel, kind) not in channels:
             # whitelist: never exec an arbitrary channel/kind string
             known = ",".join(f"{c}/{k}" for c, k in channels) or "(none)"

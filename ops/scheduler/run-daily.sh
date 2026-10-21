@@ -66,7 +66,7 @@ fi
 [ -n "$TIER" ] || { echo "[error] no tier resolved — pass one as arg 4 or set DAILY_POST_TIER"; exit 2; }
 
 KIND="${ARG_KIND:-${DAILY_POST_KIND:-$(envget DAILY_POST_KIND)}}"; KIND="${KIND:-card}"
-case "$KIND" in card|graph) : ;; *) echo "[warn] KIND='$KIND' not card|graph — using card"; KIND=card;; esac
+case "$KIND" in card|graph|insights) : ;; *) echo "[warn] KIND='$KIND' not card|graph|insights — using card"; KIND=card;; esac
 
 case "$COUNT" in ''|*[!0-9]*) echo "[warn] COUNT='$COUNT' not a number — using 1"; COUNT=1;; esac
 case "$DELAY" in ''|*[!0-9smhd]*) echo "[warn] DELAY='$DELAY' not a duration — using 90"; DELAY=90;; esac
@@ -78,7 +78,8 @@ POST_ARGS=(READY=1 OLDEST=1 COUNT="$COUNT" DELAY="$DELAY" KIND="$KIND")
 
 if [ "${SCHEDULER_DRY_RUN:-}" = "1" ]; then
   echo "[dry-run] channel=${CHANNEL:-<all enabled>} count=$COUNT delay=$DELAY tier=${TIER} kind=${KIND}"
-  echo "[dry-run] make post ${POST_ARGS[*]}"
+  if [ "$KIND" = "insights" ]; then echo "[dry-run] make insights-post TIER=${TIER} CHANNEL=${CHANNEL}"
+  else echo "[dry-run] make post ${POST_ARGS[*]}"; fi
   exit 0
 fi
 
@@ -89,5 +90,11 @@ case "${CHANNEL:-all}" in
 esac
 echo "[config] COUNT=$COUNT DELAY=$DELAY  $COSTNOTE"
 make heal || echo "[warn] heal returned non-zero — continuing; daily.py will flag any stuck posts"
-make post "${POST_ARGS[@]}"
+if [ "$KIND" = "insights" ]; then
+  # Weekly sector digest: one post per fire, no backlog to drain, so COUNT/
+  # DELAY/OLDEST/READY don't apply (bin/graph_stats_post.py).
+  make insights-post TIER="$TIER" ${CHANNEL:+CHANNEL="$CHANNEL"}
+else
+  make post "${POST_ARGS[@]}"
+fi
 echo "===== end     $(date -u +%FT%TZ) ====="

@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .card_to_graph import card_to_graph_spec
 from .config_loader import Tier, context_chain
@@ -609,3 +609,115 @@ def compose_graph_insight(tier: Tier, insight: dict, *, sector: str = "",
     text, hook = _temporal_frame(draft, None, kind="finding")
     body = _append_hashtags(text, tags, max_chars)
     return f"{body}\n\n{hook}"
+
+
+# ---------- Weekly sector digest (graph_insights[]) ----------
+# docs/social-posting-strategy.md Part 2 §3, grown from "one insight" to "the
+# week's takeaways". Every headline is quoted VERBATIM (graph-posters.md rule:
+# never re-derive a claim from the counts); this only chooses, orders and
+# frames them.
+
+_INSIGHT_COOLDOWN_DAYS = 21   # the same subject isn't re-featured sooner than this
+_DIGEST_MAX = 3               # up to 2 hub entities + 1 sector-wide trend
+
+# headline wording -> topic hashtag (mirrors catalyst-knowledge-graph's
+# TOPIC_TAG so the tags match what card posts already use).
+_INSIGHT_TOPIC = (
+    ("competitive collision", "#Competition"), ("displacement", "#Disruption"),
+    ("partnership", "#Partnership"), ("investment", "#Funding"),
+    ("integration", "#Integration"), ("technical dependenc", "#TechStack"),
+    ("acquisition", "#Acquisition"), ("supply", "#SupplyChain"),
+    ("pilot", "#Pilot"), ("deployment", "#Deployment"),
+    ("talent", "#Talent"), ("regulat", "#Regulation"), ("litigat", "#Litigation"),
+)
+_GENERIC_NAME_WORDS = {"manufacturers", "suppliers", "companies", "vendors", "providers",
+                       "startups", "makers", "firms", "industry", "sector", "players",
+                       "integrators", "developers", "operators"}
+
+
+def insight_key(ins: dict) -> str:
+    """Stable subject of an insight — what the cooldown is keyed on. NOT the
+    headline: its counts change daily, so a headline key would re-feature the
+    same entity every week with slightly different numbers."""
+    if ins.get("entity"):
+        return f"e:{ins['entity']}"
+    return f"r:{ins.get('rel_type') or (ins.get('headline') or '')[:40]}"
+
+
+def _insight_rel(ins: dict) -> str:
+    h = (ins.get("headline") or "").lower()
+    return next((tag for word, tag in _INSIGHT_TOPIC if word in h), "")
+
+
+def pick_digest(insights: list[dict], seen: dict[str, datetime], *,
+                now: datetime | None = None,
+                cooldown_days: int = _INSIGHT_COOLDOWN_DAYS) -> list[dict]:
+    """Up to 2 hub-entity insights (preferring different relationship types,
+    so it isn't two 'collisions') + the strongest sector-wide trend, skipping
+    any subject featured within the cooldown. Input is already strongest-first
+    (the KG sorts it). [] when fewer than 2 fresh items remain — a quiet week
+    posts nothing rather than a thin or repeated digest."""
+    now = now or datetime.now(timezone.utc)
+    fresh = []
+    for i in insights:
+        if not i.get("headline"):
+            continue
+        k = insight_key(i)
+        if k in seen and (now - seen[k]).days < cooldown_days:
+            continue
+        fresh.append(i)
+    hubs = [i for i in fresh if i.get("type") == "chokepoint"]
+    trends = [i for i in fresh if i.get("type") == "velocity"]
+    picked: list[dict] = []
+    used_rel: set[str] = set()
+    for i in hubs:                      # pass 1: distinct relationship types
+        if len(picked) < 2 and _insight_rel(i) not in used_rel:
+            picked.append(i)
+            used_rel.add(_insight_rel(i))
+    for i in hubs:                      # pass 2: fill if variety ran out
+        if len(picked) < 2 and i not in picked:
+            picked.append(i)
+    picked += trends[:1]
+    return picked[:_DIGEST_MAX] if len(picked) >= 2 else []
+
+
+def _digest_hashtags(picked: list[dict], sector: str) -> list[str]:
+    tags: list[str] = []
+    for i in picked:                    # brand entities (<=2); generic phrases skipped
+        name = i.get("entity") or ""
+        words = name.split()
+        if name and len(words) <= 3 and not ({w.lower() for w in words} & _GENERIC_NAME_WORDS):
+            t = _camel_tag(name)
+            if t and len(tags) < 2:
+                tags.append(t)
+    topics: list[str] = []
+    for i in picked:
+        t = _insight_rel(i)
+        if t and t not in topics:
+            topics.append(t)
+    tags += topics[:2]
+    tags += SECTOR_HASHTAGS.get((sector or "").strip().lower(), [])[:1]
+    seen_l: set[str] = set()
+    out: list[str] = []
+    for t in tags:
+        if t.lower() not in seen_l:
+            seen_l.add(t.lower())
+            out.append(t)
+    return out[:5]
+
+
+def compose_graph_digest(tier: Tier, picked: list[dict], *, sector: str = "",
+                         now: datetime | None = None) -> str:
+    """The weekly 'what moved in the sector' post. DETERMINISTIC, no LLM:
+    each bullet is an insight's own headline, verbatim. 🔺 = hub entity,
+    📈 = sector-wide trend. The deep link is appended by the recipe."""
+    if not picked:
+        raise ValueError("compose_graph_digest: nothing to post")
+    now = now or datetime.now(timezone.utc)
+    monday = now - timedelta(days=now.weekday())
+    sec = f"{sector.title()} " if sector else ""
+    lines = [f"📈 {sec}graph signal · week of {monday.strftime('%b')} {monday.day}", ""]
+    for i in picked:
+        lines.append(f"{'🔺' if i.get('type') == 'chokepoint' else '📈'} {i['headline']}")
+    tags = " ".join(_digest_hashtags(picked, sector))
+    return "\n".join(lines) + f"\n\n{tags}\n\nWhere the connections are clustering ↓"

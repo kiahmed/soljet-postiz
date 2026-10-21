@@ -18,7 +18,7 @@ sched_envget() {
 
 # Emit valid schedule rows as: channel<TAB>count<TAB>delay<TAB>tier<TAB>kind<TAB>cron
 # Trims whitespace, skips comments/blanks, validates count is numeric, kind is
-# card|graph, and the cron is 5 fields. Aborts (rc 1) on a malformed row so a
+# card|graph|insights, and the cron is 5 fields. Aborts (rc 1) on a malformed row so a
 # typo can't silently drop a channel.
 sched_rows() {
   [ -f "$CHANNELS_CONF" ] || { echo "ERROR: no channels.conf at $CHANNELS_CONF" >&2; return 1; }
@@ -38,8 +38,8 @@ sched_rows() {
     case "$count" in ''|*[!0-9]*) echo "ERROR: channels.conf: count '$count' for '$channel' is not a number" >&2; return 1;; esac
     case "$delay" in ''|*[!0-9smhd]*) echo "ERROR: channels.conf: delay '$delay' for '$channel' is not a duration (90, 60m, 2h)" >&2; return 1;; esac
     [ -z "$tier" ] && { echo "ERROR: channels.conf: missing tier for '$channel'" >&2; return 1; }
-    case "$kind" in ''|card) kind=card ;; graph) : ;;
-      *) echo "ERROR: channels.conf: kind '$kind' for '$channel' must be 'card' or 'graph'" >&2; return 1 ;; esac
+    case "$kind" in ''|card) kind=card ;; graph|insights) : ;;
+      *) echo "ERROR: channels.conf: kind '$kind' for '$channel' must be card, graph or insights" >&2; return 1 ;; esac
     if [ "$(echo "$cron" | wc -w)" -ne 5 ]; then
       echo "ERROR: channels.conf: cron '$cron' for '$channel' must be 5 fields (min hour dom mon dow)" >&2; return 1
     fi

@@ -9,9 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import posted_log
 from .composer import (_append_hashtags, _llm_rewrite, _read_context, compose_catalyst,
-                       compose_finding, compose_graph, compose_graph_insight,
-                       compose_graph_stats)
+                       compose_finding, compose_graph, compose_graph_digest,
+                       compose_graph_insight, compose_graph_stats, insight_key, pick_digest)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -188,7 +189,30 @@ def recipe_graph(tier: Tier, source_id: str) -> PostBundle:
                    f"(no cards_json/firestore_cards source configured)")
 
 
-def recipe_graph_stats(tier: Tier) -> PostBundle:
+def insights_tkey(tier_id: str, channel: str) -> str:
+    """posted_log key for the weekly digest. Per CHANNEL: LinkedIn and X fire
+    as separate scheduler rows, and a shared key would let the first one mark
+    the week's subjects 'seen' so the second picked different ones."""
+    return f"{tier_id}:insights:{(channel or 'all').lower()}"
+
+
+def insights_seen(tier_id: str, channel: str) -> dict:
+    """{insight_key: when it was last featured} from this channel's past digests."""
+    import json
+    seen: dict = {}
+    for row in posted_log.all_entries(insights_tkey(tier_id, channel)):
+        try:
+            when = datetime.fromisoformat(row["posted_at"])
+            keys = (json.loads(row.get("response") or "{}") or {}).get("keys") or []
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+        for k in keys:
+            if k not in seen or when > seen[k]:
+                seen[k] = when
+    return seen
+
+
+def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
     """A recurring 'state of the [sector] graph' post (docs/social-posting-
     strategy.md Part 2 §3/Phase-1-item-3) from stats{} already computed by
     catalyst-knowledge-graph's export — not tied to any one card, so there's
@@ -226,12 +250,22 @@ def recipe_graph_stats(tier: Tier) -> PostBundle:
         get_insights = getattr(src, "graph_insights", None)
         insights = get_insights() if callable(get_insights) else []
         if insights:
-            text = compose_graph_insight(tier, insights[0], sector=sector)
+            # Weekly digest: the strongest few takeaways, subjects on a
+            # cooldown so the same entity isn't re-featured week after week.
+            picked = pick_digest(insights, insights_seen(tier.id, channel))
+            if not picked:
+                raise KeyError(f"tier '{tier.id}': graph_insights present but fewer than 2 "
+                               f"fresh subjects (cooldown) — nothing new this week")
+            text = append_link_to_text(
+                compose_graph_digest(tier, picked, sector=sector),
+                f"https://{tier.raw.get('PUBLISH_SUBDOMAIN', '').strip()}"
+                if tier.raw.get("PUBLISH_SUBDOMAIN") else "")
             return PostBundle(
                 text=text,
                 source_type="graph_stats",
                 source_id=source_id,
-                context={"title": text.splitlines()[0][:120] if text else ""},
+                context={"title": text.splitlines()[0][:120] if text else "",
+                         "insight_keys": [insight_key(i) for i in picked]},
             )
 
         get_stats = getattr(src, "stats", None)

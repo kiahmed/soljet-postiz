@@ -2,7 +2,7 @@
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
 .PHONY: help venv postiz-export postiz-import postiz-uploads deploy status update down clean clean-stopped clean-deep logs \
-        ps restart heal heal-check check post post-preview regenerate manual-queue post-status \
+        ps restart heal heal-check check post post-preview regenerate insights-post manual-queue post-status \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
@@ -123,6 +123,9 @@ regenerate:     ## Re-compose + re-stage (discard staged), no publish — TIER= 
 
 post:           ## Publish posts — TIER= required [COUNT=n] [DELAY=secs] [WATCH=2h] [OLDEST=1] [READY=1] [CHANNEL=] [KIND=card|graph]
 	$(PYTHON) bin/daily.py --push $(_POSTOPTS)
+
+insights-post:  ## Weekly sector-insights digest (kind=insights) — TIER= required [CHANNEL=]
+	$(PYTHON) bin/graph_stats_post.py --push --mode now $(if $(TIER),--tier $(TIER)) $(if $(CHANNEL),--channel $(CHANNEL))
 
 manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 	@cat data/manual-post-queue.md 2>/dev/null || echo "(manual queue is empty)"

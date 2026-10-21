@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""Manual/one-off poster for recipe_graph_stats() — the "state of the [sector]
-graph" post (docs/social-posting-strategy.md Part 2 §3, Phase 1 item 3).
+"""Weekly "what moved in the sector" digest — recipe_graph_stats(): the week's
+strongest graph_insights[] (up to 2 hub entities + 1 sector-wide trend),
+headlines quoted verbatim, topical hashtags, link to the sector site
+(docs/social-posting-strategy.md Part 2 §3).
 
-Deliberately NOT wired into bin/daily.py's backlog-drain machinery (that
-loop's staging cache, channel-done tracking, and X confidence gate are all
-built around one-post-per-card; a stats-based digest has no card and no
-per-channel confidence signal, so bolting it on risked the one thing this
-build is explicit about not doing — breaking daily.py's existing, well-tested
-path). This script is the same shape as bin/matrix_poster.py's --event: small,
-self-contained, safe to run repeatedly by hand while deciding wording/cadence,
-promotable to its own channels.conf schedule row later the same way
-graph-posters.md's --kind graph started manual before it got one.
+Runs as the scheduler's `insights` kind (ops/scheduler/channels.conf ->
+run-daily.sh -> `make insights-post`), one row per channel, weekly. Kept out
+of bin/daily.py's backlog-drain loop on purpose: that loop's staging cache,
+channel-done tracking and X confidence gate are all built around
+one-post-per-card, and a sector digest has no card.
+
+Repeat protection lives in posted_log (tier key "<tier>:insights:<channel>"):
+each published digest records the subjects it featured, and a subject isn't
+re-featured for 21 days. A week with <2 fresh subjects posts nothing.
 
 Usage:
-    python bin/graph_stats_post.py --tier arboryx.robotics                # preview
-    python bin/graph_stats_post.py --tier arboryx.robotics --push --mode draft
-    python bin/graph_stats_post.py --tier arboryx.robotics --push --mode now
+    python bin/graph_stats_post.py --tier arboryx.robotics                       # preview
+    python bin/graph_stats_post.py --tier arboryx.robotics --channel linkedin --push --mode now
+    python bin/graph_stats_post.py --tier arboryx.robotics --push --mode draft   # Postiz drafts
 """
 from __future__ import annotations
 
@@ -26,18 +28,22 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "bin"))
 
+import daily  # noqa: E402  (poll_publish, _kind_channel_enabled)
 from bin._common import integration_ids_for, load_dotenv  # noqa: E402
+from src.lib import posted_log  # noqa: E402
 from src.lib.channel_dispatch import channel_label, channel_parts  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
-from src.lib.recipes import recipe_graph_stats  # noqa: E402
+from src.lib.recipes import insights_tkey, recipe_graph_stats  # noqa: E402
 from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True, help="e.g. arboryx.robotics")
+    ap.add_argument("--channel", help="one channel only (linkedin | x) — how the scheduler calls it")
     ap.add_argument("--push", action="store_true", help="actually create in Postiz (default: preview only)")
     ap.add_argument("--mode", choices=["draft", "schedule", "now"], default="draft")
     args = ap.parse_args()
@@ -45,46 +51,58 @@ def main() -> int:
     load_dotenv()
     tier = load_tier(args.tier)
 
-    try:
-        bundle = recipe_graph_stats(tier)
-    except KeyError as e:
-        print(f"[graph_stats] nothing to post: {e}")
-        return 0  # not an error — a stats-less week is expected sometimes
-
     iids = integration_ids_for(tier)
+    if args.channel:
+        iids = [i for i in iids if channel_label(tier, i).lower() == args.channel.lower()]
+    # INSIGHTS_POST_<CHANNEL>_ENABLED="false" in tier.config pulls one channel
+    # without touching the Cloud Scheduler job (same switch pattern as graph).
+    iids = [i for i in iids if daily._kind_channel_enabled(tier, "insights", channel_label(tier, i))]
     if not iids:
-        print(f"[graph_stats] no live channels for tier '{args.tier}'", file=sys.stderr)
-        return 1
-
-    print(f"source_id={bundle.source_id}\n")
-    ec = None
-    rendered: dict[str, list[str]] = {}
-    for i in iids:
-        lbl = channel_label(tier, i)
-        ch_base_parts = split_for_thread(bundle.text, max_chars=max_chars_for_channel(lbl))
-        ch_parts, ec = channel_parts(tier, lbl, source_type=bundle.source_type,
-                                     source_id=bundle.source_id, parts=ch_base_parts,
-                                     entities_cache=ec)
-        rendered[lbl] = ch_parts
-        print(f"--- [{lbl}] ---")
-        for p in ch_parts:
-            print(p)
-            print()
-
-    if not args.push:
-        print("(preview only — pass --push to actually post)")
+        print(f"[graph_stats] no live/enabled channels for tier '{args.tier}'"
+              f"{' / ' + args.channel if args.channel else ''} — skip")
         return 0
 
-    client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY"))
-    for i in iids:
-        lbl = channel_label(tier, i)
+    client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY")) if args.push else None
+    ec = None
+    for iid in iids:
+        lbl = channel_label(tier, iid)
         try:
-            resp = client.create_post(parts=rendered[lbl], integration_ids=[i], mode=args.mode)
+            bundle = recipe_graph_stats(tier, lbl)
+        except KeyError as e:
+            print(f"[graph_stats] [{lbl}] nothing to post: {e}")
+            continue  # not an error — a quiet week is expected sometimes
+        keys = bundle.context.get("insight_keys", [])
+
+        base = split_for_thread(bundle.text, max_chars=max_chars_for_channel(lbl))
+        parts, ec = channel_parts(tier, lbl, source_type=bundle.source_type,
+                                  source_id=bundle.source_id, parts=base, entities_cache=ec)
+        print(f"--- [{lbl}] {bundle.source_id} ---")
+        for p in parts:
+            print(p)
+            print()
+        if not args.push:
+            print("(preview only — pass --push to actually post)")
+            continue
+
+        try:
+            resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode)
             r = resp[0] if isinstance(resp, list) and resp else resp
-            pid = (r or {}).get("id") or (r or {}).get("postId")
-            print(f"[{lbl}] posted: {pid}")
-        except Exception as e:  # noqa: BLE001
+            pid = (r or {}).get("postId") or (r or {}).get("id")
+        except Exception as e:  # noqa: BLE001 — one channel's failure can't block the other
             print(f"[{lbl}] FAILED: {e}", file=sys.stderr)
+            continue
+        if args.mode != "now":
+            print(f"[{lbl}] created ({args.mode}): {pid}")
+            continue
+        state, url, err = daily.poll_publish(pid)
+        print(f"[{lbl}] {state} {url or err}")
+        if state == "PUBLISHED":  # record the featured subjects -> 21-day cooldown
+            posted_log.mark_posted(
+                source_type=bundle.source_type, source_id=bundle.source_id,
+                tier=insights_tkey(tier.id, lbl), mode="now", text=bundle.text,
+                integration_ids=[iid], postiz_post_id=url,
+                response={"channels": [{"channel": lbl, "state": state, "url": url}],
+                          "keys": keys})
     return 0
 
 
