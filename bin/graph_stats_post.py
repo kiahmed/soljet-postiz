@@ -84,12 +84,34 @@ def main() -> int:
             print("(preview only — pass --push to actually post)")
             continue
 
+        # Claim the week BEFORE posting. Cloud Scheduler is at-least-once and the
+        # poll below can take ~2 min, so recording only afterwards leaves a window
+        # where a duplicate delivery would pass the same-week guard in
+        # recipe_graph_stats and post a second digest. The claim carries the same
+        # "keys", so the 21-day cooldown is identical either way. Released below
+        # if nothing was accepted or the post confirmed-ERRORed. Draft/schedule
+        # runs never claim (a draft must not block the real weekly post).
+        tkey = insights_tkey(tier.id, lbl)
+        claimed = False
+        if args.mode == "now":
+            try:
+                posted_log.mark_posted(
+                    source_type=bundle.source_type, source_id=bundle.source_id,
+                    tier=tkey, mode="now", text=bundle.text, integration_ids=[iid],
+                    response={"channels": [{"channel": lbl, "state": "CLAIMED"}], "keys": keys})
+                claimed = True
+            except Exception as e:  # noqa: BLE001 — can't claim -> don't post unclaimed
+                print(f"[{lbl}] could not claim the week, not posting: {e}", file=sys.stderr)
+                continue
+
         try:
             resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode)
             r = resp[0] if isinstance(resp, list) and resp else resp
             pid = (r or {}).get("postId") or (r or {}).get("id")
         except Exception as e:  # noqa: BLE001 — one channel's failure can't block the other
             print(f"[{lbl}] FAILED: {e}", file=sys.stderr)
+            if claimed:  # never accepted -> release the claim
+                posted_log.unmark_posted(tkey, bundle.source_id)
             continue
         if args.mode != "now":
             print(f"[{lbl}] created ({args.mode}): {pid}")
@@ -101,12 +123,18 @@ def main() -> int:
         # would let next week re-feature the same subjects. Only a confirmed
         # ERROR (or a create_post that never got accepted) leaves it unrecorded.
         if state in ("PUBLISHED", "QUEUE"):  # featured subjects -> 21-day cooldown
+            # Overwrites the CLAIMED row with the final state (same tier+source_id).
             posted_log.mark_posted(
                 source_type=bundle.source_type, source_id=bundle.source_id,
-                tier=insights_tkey(tier.id, lbl), mode="now", text=bundle.text,
+                tier=tkey, mode="now", text=bundle.text,
                 integration_ids=[iid], postiz_post_id=pid,
                 response={"channels": [{"channel": lbl, "state": state, "url": url}],
                           "keys": keys})
+        elif state == "ERROR" and claimed:
+            # Postiz confirmed the failure: free the week (and the subjects'
+            # cooldown) so a retry can post. Any other/unknown state keeps the
+            # claim on purpose — better a missed week than a double post.
+            posted_log.unmark_posted(tkey, bundle.source_id)
     return 0
 
 

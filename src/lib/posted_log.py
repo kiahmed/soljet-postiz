@@ -252,6 +252,15 @@ def failed_channels_for(tier: str, source_id: str) -> set[str]:
     return {r[0] for r in rows}
 
 
+def unmark_posted(tier: str, source_id: str) -> None:
+    """Delete this (tier, source_id) row from the posted log. Used to RELEASE a
+    claim written before a post was attempted (bin/graph_stats_post.py claims
+    the week first so an at-least-once scheduler delivery can't double-post)
+    when the post never got accepted or confirmed-ERRORed."""
+    with _conn() as c:
+        c.execute("DELETE FROM posted WHERE tier=? AND source_id=?", (tier, source_id))
+
+
 def clear_failed(tier: str, source_id: str, channel: str | None = None) -> None:
     """Manual escape hatch: after fixing the underlying issue (e.g. topped-up
     X credits), clear the DLQ mark so the picker considers this card again on

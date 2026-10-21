@@ -641,7 +641,12 @@ def insight_key(ins: dict) -> str:
     same entity every week with slightly different numbers."""
     if ins.get("entity"):
         return f"e:{ins['entity']}"
-    return f"r:{ins.get('rel_type') or (ins.get('headline') or '')[:40]}"
+    if ins.get("rel_type"):
+        return f"r:{ins['rel_type']}"
+    # A trend with neither an entity nor a rel_type: key on its (stable) type,
+    # never on the headline text — those counts change daily, so a headline
+    # slice would never be recognised as already featured.
+    return f"t:{ins.get('type') or 'insight'}"
 
 
 def _insight_rel(ins: dict) -> str:
@@ -708,12 +713,26 @@ def _digest_hashtags(picked: list[dict], sector: str) -> list[str]:
 
 def _clean_headline(h: str, max_len: int = 200) -> str:
     """Headlines are KG-authored and quoted verbatim — but this goes to public
-    accounts, so strip what could act on its own: an '@Someone' would tag a
-    real account, a URL would post a link (card text already strips trailing
-    links; the digest had no equivalent). Normal headlines pass through
-    unchanged."""
-    h = re.sub(r"https?://\S+", "", h or "")
+    accounts, so strip what could act on its own:
+      - LinkedIn mention tokens '@[Name](urn:li:...)': Postiz's LinkedIn fixText()
+        escapes every reserved character EXCEPT that exact token, which it passes
+        through as a real mention of an arbitrary org. So strip the token and any
+        'urn:li:' text. Parentheses elsewhere are escaped by Postiz and are left
+        alone ('(9.6x prior 90-day rate)' must survive).
+      - URLs and '@word' mentions (would post a link / tag a real account).
+      - '$TICKER' cashtags (X rejects more than one per post) and embedded '#tags'
+        (would become arbitrary hashtags): drop the sigil, keep the word.
+      - bidi / zero-width / control characters, including newlines (a newline
+        could fake a bullet line).
+    Normal headlines pass through unchanged."""
+    h = h or ""
+    h = re.sub(r"@\[[^\]]*\]\([^)]*\)", "", h)
+    h = re.sub(r"urn:li:\S*", "", h, flags=re.I)
+    h = re.sub(r"https?://\S+|www\.\S+", "", h)
     h = re.sub(r"(?<!\w)@\w+", "", h)
+    h = re.sub(r"\$(?=[A-Za-z])", "", h)
+    h = re.sub(r"(?<!\w)#(?=\w)", "", h)
+    h = re.sub(r"[​-‏‪-‮⁠-⁩﻿\x00-\x1f\x7f]", " ", h)
     h = re.sub(r"\s+", " ", h).strip()
     return h if len(h) <= max_len else h[: max_len - 1].rstrip() + "…"
 
