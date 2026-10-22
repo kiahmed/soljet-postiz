@@ -54,6 +54,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from bin._common import integration_ids_for, load_dotenv  # noqa: E402
 from src.lib.channel_dispatch import channel_label  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
+from src.lib.funnel import tag_links  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
 from src.lib.sources.reflex_posts import ReflexPostsDB  # noqa: E402
 from src.lib.thread import max_chars_for_channel  # noqa: E402
@@ -485,7 +486,8 @@ def with_cta(tier, label: str, text: str, extra: str | None = None,
     moves to the reply, then non-brand tags drop from the end, then the
     wording is shortened. Other channels: each a paragraph, link last.
     The link is off while REFLEX_CTA_URL is blank."""
-    url = (tier.raw.get("REFLEX_CTA_URL") or "").strip()
+    url = tag_links(tier, label, (tier.raw.get("REFLEX_CTA_URL") or "").strip(),
+                    content="move")
     cta = ((tier.raw.get("REFLEX_CTA_TEXT") or "Live Reflex calls, as they fire: {url}")
            .format(url=url) if url else None)
     if label.upper() != "X":

@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from .config_loader import Tier, load_tier
+from .funnel import tag_links
 from .handles import resolve_handle
 from .imagery import auto_media
 from .recipes import PostBundle
@@ -264,6 +265,9 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
             paras[idx] = f"{paras[idx].rstrip()} {' '.join(fitted)}"
             p0 = "\n\n".join(paras)
     new_parts = ([p0] + list(parts[1:])) if parts else parts
+    # UTM-tag our own links AFTER tag fitting: fitting measures raw length and
+    # X counts any URL as 23 chars, so the longer URL can't break that budget.
+    new_parts = [tag_links(tier, label, p, content=source_type) for p in new_parts]
     if label.upper() == "X":
         new_parts = [re.sub(r"\n{2,}", "\n", p) for p in new_parts]
     return reply_link_parts(tier, label, new_parts), entities_cache

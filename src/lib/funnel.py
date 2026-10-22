@@ -18,9 +18,13 @@ are ignored. URL-encoding is applied to each substituted value.
 from __future__ import annotations
 
 import os
-from urllib.parse import quote_plus
+import re
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from .config_loader import Tier
+
+_URL_RE = re.compile(r"https?://\S+")
+_TRAILING = ").,;:!?"
 
 
 def _format(template: str, vars: dict) -> str | None:
@@ -131,3 +135,64 @@ def branch_short_name(tier: Tier) -> str:
     if "." not in tier.id:
         return tier.id
     return tier.id.split(".", 1)[1]
+
+
+def _cfg(tier: Tier, key: str, default: str) -> str:
+    """Tier value, walking up the parent chain (branch inherits parent)."""
+    t = tier
+    while t is not None:
+        if t.raw.get(key):
+            return t.raw[key]
+        if not t.parent_id:
+            break
+        from .config_loader import load_tier
+        t = load_tier(t.parent_id)
+    return default
+
+
+def utm_url(url: str, *, source: str, campaign: str, content: str = "",
+            medium: str = "social") -> str:
+    """Add utm_* params to `url` so GA attributes the visit to this post.
+    Leaves a URL that already carries utm_source untouched (a hand-tagged
+    link wins); existing query params and the fragment are kept."""
+    parts = urlsplit(url)
+    q = parse_qsl(parts.query, keep_blank_values=True)
+    if any(k == "utm_source" for k, _ in q):
+        return url
+    q += [("utm_source", source), ("utm_medium", medium), ("utm_campaign", campaign)]
+    if content:
+        q.append(("utm_content", content))
+    return urlunsplit(parts._replace(query=urlencode(q)))
+
+
+def tag_links(tier: Tier, label: str, text: str, content: str = "") -> str:
+    """UTM-tag every link to our own sites in `text` for channel `label`.
+
+    Without this, a click from the LinkedIn/X apps lands in GA as
+    "(direct) / (none)" — no way to tell which post, product or channel drove
+    it. Applied per channel at fan-out time (channel_parts / reflex with_cta),
+    never to the shared composed text, so the og:image lookup and posted-log
+    still see the clean URL. X counts any URL as 23 chars (Postiz validates
+    with twitter-text, transformedURLLength=23), so the longer URL doesn't
+    eat into the 280 budget.
+
+    Tier knobs: UTM_TAGGING="false" turns it off; UTM_DOMAINS is the
+    comma list of domains to tag (default arboryx.ai,facades.trade —
+    subdomains included). utm_campaign = tier id, utm_source = channel.
+    """
+    if _cfg(tier, "UTM_TAGGING", "true").lower() != "true" or not text:
+        return text
+    domains = [d.strip().lower() for d in
+               _cfg(tier, "UTM_DOMAINS", "arboryx.ai,facades.trade").split(",") if d.strip()]
+    source = label.strip().lower().replace(" ", "_")
+
+    def _sub(m: re.Match) -> str:
+        raw = m.group(0)
+        url = raw.rstrip(_TRAILING)
+        tail = raw[len(url):]
+        host = (urlsplit(url).hostname or "").lower()
+        if not any(host == d or host.endswith("." + d) for d in domains):
+            return raw
+        return utm_url(url, source=source, campaign=tier.id, content=content) + tail
+
+    return _URL_RE.sub(_sub, text)
