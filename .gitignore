@@ -47,3 +47,6 @@ __pycache__/
 
 # Generated scheduler crontab (source: ops/scheduler/channels.conf)
 ops/scheduler/crontab
+
+# Weekly GA report (make ga-weekly): real traffic data + GA property IDs — repo is public, keep it local
+docs/weekly_ga_updates.html

@@ -2,7 +2,7 @@
 # docker-compose, and the daily poster (bin/daily.py). Run `make` for the list.
 .DEFAULT_GOAL := help
 .PHONY: help venv postiz-export postiz-import postiz-uploads deploy status update down clean clean-stopped clean-deep logs \
-        ps restart heal heal-check check post post-preview regenerate insights-post manual-queue post-status \
+        ps restart heal heal-check check post post-preview regenerate insights-post manual-queue post-status ga-weekly \
         social-status social-cache social-cache-list social-cache-clean social-cache-update \
         scheduler-up scheduler-down scheduler-restart scheduler-logs scheduler-run scheduler-show \
         tunnel-up tunnel-check tunnel-down \
@@ -16,7 +16,7 @@
 # `make post-preview OLDERST=1` silently ignored the typo and posted the NEWEST
 # card. Catch it: any command-line variable not in this allowlist aborts.
 KNOWN_VARS := OLDEST CHANNEL TIER FORCE MISSING COUNT DELAY READY WATCH POLL m DRY FILE UPLOADS \
-              KEEP MODE EVENT PART SUB KIND
+              KEEP MODE EVENT PART SUB KIND WEEKS
 _cmdline_vars := $(foreach kv,$(MAKEOVERRIDES),$(firstword $(subst =, ,$(kv))))
 _unknown_vars := $(filter-out $(KNOWN_VARS),$(_cmdline_vars))
 ifneq ($(_unknown_vars),)
@@ -132,6 +132,9 @@ manual-queue:   ## Show posts awaiting a hand-post (failed/stuck channels)
 
 post-status:    ## Posted vs available + PNG-rendered per tier [TIER=] [MISSING=1]
 	@$(PYTHON) bin/post-status.py $(if $(TIER),--tier $(TIER)) $(if $(MISSING),--missing)
+
+ga-weekly:      ## GA4 + Postiz weekly traffic report → docs/weekly_ga_updates.html (updates this week) [WEEKS=n]
+	@$(PYTHON) bin/ga_weekly.py $(if $(WEEKS),--weeks $(WEEKS))
 
 social-status:  ## Per-channel auth/connection health + last error (Postiz store) [TIER=]
 	@$(PYTHON) bin/social-status.py $(if $(TIER),--tier $(TIER))
