@@ -169,9 +169,9 @@ not here.
 # Weekly recap — digest record, images, hashtags (2026-10-26)
 
 **Status:** committed in the KG repo (`10afe7a`), **live once the KG deploy
-lands**. Up to 5 cards per week (generic category names are filtered out
-of the sector card; it's omitted only when there's no trend insight or every
-name is generic). Until then the fields below are absent — keep posting the digest
+lands**. Up to 6 cards per week: up to 5 `entity` cards + 1 `sector` card
+(generic category names are filtered out of the sector card; it's omitted
+only when there's no trend insight or every name is generic). Until then the fields below are absent — keep posting the digest
 text-only. Detect readiness by presence, never by date.
 KG spec: `technical_spec.md` §2.9b.
 
@@ -192,7 +192,7 @@ KG spec: `technical_spec.md` §2.9b.
 |---|---|---|
 | Insights (+ `hashtags`) | `CKG-Robotics/graph/sectors/Robotics` → `graph_insights` | overwritten daily |
 | Recap, live copy | same doc → `recap` | overwritten daily |
-| **Recap, the week's record** | `CKG-Robotics/recaps/weeks/<YYYY-Www>` (e.g. `2026-W44`) | **write-once** — created by the first export of the ISO week that has recap cards (normally Monday's; can slip a day if Monday has none), then never changes |
+| **Recap, the week's record** | `CKG-Robotics/recaps/weeks/<YYYY-Www>` (e.g. `2026-W44`) | **write-once per schema** — created by the first export of the ISO week that has recap cards (normally Monday's; can slip a day if Monday has none). Rewritten exactly once if the KG ships a newer `schema` (never downgraded); key caches on `(week, schema)` |
 | Recap card images | `gs://robotics-cards/recaps/Robotics/<YYYY-Www>/<card.id>.png` | **write-once** (only a manual `recaps_force` re-render overwrites); deleted by the bucket's 90-day lifecycle rule |
 
 Images are in the same **private** bucket as card PNGs, read the same way
@@ -211,35 +211,48 @@ gcloud storage ls gs://robotics-cards/recaps/Robotics/   # as the posting identi
 `_gcs_list_ids` swallows a 403; for recap images log a missing/denied read
 loudly, or a permissions gap silently turns every digest text-only.
 
-## Record shape (`recap`, identical in both places)
+## Record shape (`recap`, identical in both places) — schema 2 (2026-10-27)
 
-Illustrative (values from the 2026-W44 sample; the week doc additionally
-carries `"sector": "Robotics"`):
+Illustrative (2026-W44 values; the week doc additionally carries
+`"sector": "Robotics"`). **Every card has a `kind`** — that's how you tell
+what you're attaching:
 
 ```jsonc
 {
-  "week": "2026-W44", "as_of": "2026-10-26", "window_days": 30, "baseline_days": 90,
+  "schema": 2,                       // 1 = old separate mix/grounding/concentration cards
+  "week": "2026-W44", "as_of": "2026-10-27", "window_days": 30, "baseline_days": 90,
   "groups": ["Competition", "Partnership", "Deployment", "Supply & tech", "Capital & talent", "Other"],
-  // digest default — same order as cards[] / graph_insights[] (lead entity first)
-  "hashtags": ["#BoosterRobotics", "#HuggingFace", "#Integration", "#Robotics"],
-  "cards": [                                   // ordered: cards[0] = lead card
-    {"id": "mix-booster-robotics", "kind": "mix", "entity": "Booster Robotics",
-     "insight_headline": "Booster Robotics: 16 new connections in 30 days (9.6x …), led by 8 competitive collisions",
-     "title":   "What's behind Booster Robotics' surge?",
-     "verdict": "Booster Robotics is now a target: rivals are lining up.",   // ≤10 words
-     "big": "16 new connections", "sub": "in the last 30 days · was about 2 a month before",
-     "sentence": "Mostly rivalry: 11 of 16.",
-     "hashtags": ["#BoosterRobotics", "#Competition", "#Robotics"],
-     "data": {…}},                                                           // chart data — don't parse
-    {"id": "concentration-integrates_with", "kind": "concentration", "rel_type": "integrates_with", …},
-    {"id": "grounding-booster-robotics", "kind": "grounding", "entity": "Booster Robotics", …}
+  "hashtags": ["#SAP", "#HuggingFace", "#Integration", "#Robotics"],   // digest default
+  "cards": [                         // ordered: lead company, the sector card, other companies
+    {"id": "entity-sap", "kind": "entity", "entity": "SAP",
+     "insight_headline": "SAP: 25 new connections in 30 days (12.5x …), led by 10 competitive collisions",
+     "title":   "What's behind SAP's surge?",
+     "verdict": "SAP may be becoming a hub others join.",   // ≤10 words — the takeaway
+     "hedged":  true,                // verdict softened: <40% of its links reported/cited
+     "big": "25 new connections", "sub": "in the last 30 days · was about 2 a month before",
+     "sentence": "Mostly partnerships: 15 of 25.",
+     "confirmation": {"big": "36% confirmed", "verdict": "Early signal: mostly inference, not yet reported.",
+                      "sentence": "9 are reported or cited by sources; 16 are our model's inference."},
+     "hashtags": ["#SAP", "#Partnership", "#Robotics"],
+     "data": {"mix": {…}, "grounding": {…}}},              // chart data — don't parse
+    {"id": "sector-integrates_with", "kind": "sector", "rel_type": "integrates_with", …},
+    {"id": "entity-hugging-face", "kind": "entity", "entity": "Hugging Face", …}
+    // … one "entity" card per chokepoint insight, up to 5
   ]
 }
 ```
 
-Card kinds: `mix` (what an entity's surge is made of), `grounding` (how much
-is reported vs model-inferred), `concentration` (who the sector leans on —
-matches the velocity insight via `rel_type`).
+Card kinds:
+- **`entity`** — ONE image per company: what its surge is made of (verdict +
+  before/now chart) **and** how much of it is confirmed (a sub-panel on the
+  same image). There is no separate "confirmed" card any more.
+- **`sector`** — who the sector leans on, now vs before; matches the velocity
+  insight via `rel_type`.
+
+Coverage: one `entity` card for each of the top **5** chokepoint insights,
+so the companies your digest picks (after your 21-day skip) have a card.
+2026-10-27 a digest named HD Hyundai (insight #3) when cards only covered the
+top 2 — that's what this fixes.
 
 ## How to build the Monday digest post (do it in this order)
 
@@ -251,14 +264,15 @@ matches the velocity insight via `rel_type`).
    your 21-day `posted_log` skip). The recap does NOT apply your skip — you do.
 3. **Text:** quote each picked row's `headline` verbatim (unchanged rule).
 4. **Lead image + opening line:** for the first picked row, find its card —
-   chokepoint row → card with `kind == "mix"` and `entity == row.entity`;
-   velocity row → card with `kind == "concentration"` and
-   `rel_type == row.rel_type`. Open the post with that card's **`verdict`**
+   chokepoint row → card with `kind == "entity"` and `entity == row.entity`;
+   velocity row → card with `kind == "sector"` and
+   `rel_type == row.rel_type`. (Archived schema-1 weeks used kinds
+   `mix`/`concentration`; treat `mix` like `entity`.) Open the post with that card's **`verdict`**
    (it is the takeaway; the headline is the evidence) and attach
    `recaps/Robotics/{week}/{card.id}.png`.
-   No matching card (e.g. your skip removed both recap entities) → use
-   `cards[0]`'s image only if its subject is in your post; otherwise post
-   text-only. **Never attach an image for a subject the text doesn't mention.**
+   No matching card (your post's subjects aren't among the up-to-5
+   `entity` cards, e.g. your skip went past insight #5) → use `cards[0]`'s
+   image only if its subject is in your post; otherwise post text-only. **Never attach an image for a subject the text doesn't mention.**
 5. **Hashtags:** union the `hashtags` of exactly the rows you posted, in row
    order, deduped, then take a prefix to fit the channel (keep the sector tag
    last, same helper as `card.hashtags`). Use `recap.hashtags` only if you post
@@ -275,11 +289,13 @@ matches the velocity insight via `rel_type`).
 - **Don't re-derive numbers or verdicts.** `verdict`, `big`, `sentence` are
   computed from the same windows as the headlines; rewording them can make
   the image and text disagree.
-- **Don't post `grounding` cards alone** — "64% confirmed" needs the subject's
-  headline next to it.
-- **Cache on the image URL and the week record** — both are write-once in
-  normal operation (only a manual `recaps_force` re-render overwrites an
-  image; objects expire after 90 days). Unlike `graphs/<card_id>.png`, which
+- **Each `entity` image already carries its own "how much is confirmed"
+  panel** — never source that number from anywhere else. If `hedged` is true,
+  keep the verdict's "may be" wording; don't firm it up.
+- **Cache on the image URL and on the week record keyed by `(week,
+  schema)`** — images are write-once (only a manual `recaps_force` re-render
+  overwrites one; objects expire after 90 days); the record is write-once per
+  schema (a newer `schema` rewrites it once, with new card ids → new images). Unlike `graphs/<card_id>.png`, which
   routine `force` backfills re-render in place.
 - Footer on every image already says *Information only — not investment
   advice*; keep posts free of buy/valuation language to match.
