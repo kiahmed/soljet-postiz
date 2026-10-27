@@ -13,6 +13,7 @@ per-card pages / og:images — no stale-snapshot drift like the static file had.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from google.cloud import firestore
@@ -74,6 +75,21 @@ class FirestoreCards(Source):
         except Exception:  # noqa: BLE001
             return {}
         return (snap.to_dict() or {}).get("stats", {}) if snap.exists else {}
+
+    def recap_week(self, week: str) -> dict | None:
+        """CKG's write-once recap record for an ISO week (`<YYYY-Www>`), at
+        `<collection-root>/recaps/weeks/<week>` (root = first segment of the
+        stats doc, e.g. CKG-Robotics). None when absent — the recap ships
+        only after CKG's deploy, so absence means "post text-only", never an
+        error. Never raises."""
+        root = (self.stats_doc or "").split("/")[0]
+        if not root or not re.fullmatch(r"\d{4}-W\d{2}", week or ""):
+            return None
+        try:
+            snap = self.client.document(f"{root}/recaps/weeks/{week}").get()
+        except Exception:  # noqa: BLE001
+            return None
+        return (snap.to_dict() or None) if snap.exists else None
 
     def graph_insights(self) -> list[dict]:
         """The sector's `graph_insights[]` (catalyst-knowledge-graph's

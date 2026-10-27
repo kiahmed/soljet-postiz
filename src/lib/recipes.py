@@ -6,13 +6,15 @@ Adding a new recipe = one new function here + one CLI sub-arg.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import posted_log
 from .composer import (_append_hashtags, _llm_rewrite, _read_context, compose_catalyst,
                        compose_finding, compose_graph, compose_graph_digest,
-                       compose_graph_insight, compose_graph_stats, digest_entities, insight_key, pick_digest)
+                       compose_graph_insight, compose_graph_stats, digest_entities, insight_key, pick_digest,
+                       recap_lead_card)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -263,8 +265,16 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
             if not picked:
                 raise KeyError(f"tier '{tier.id}': graph_insights present but fewer than 2 "
                                f"fresh subjects (cooldown) — nothing new this week")
+            # CKG's recap (write-once week record): present -> its verdict opens
+            # the post and a chart image is attached; absent -> text-only, as before.
+            get_recap = getattr(src, "recap_week", None)
+            recap = get_recap(week) if callable(get_recap) else None
+            lead = recap_lead_card(picked, recap)
+            rsec = str((recap or {}).get("sector") or sector.title())
+            recap_image = (f"recaps/{rsec}/{week}/{lead['id']}.png"
+                           if lead and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", rsec) else "")
             text = append_link_to_text(
-                compose_graph_digest(tier, picked, sector=sector),
+                compose_graph_digest(tier, picked, sector=sector, lead=lead),
                 f"https://{tier.raw.get('PUBLISH_SUBDOMAIN', '').strip()}"
                 if tier.raw.get("PUBLISH_SUBDOMAIN") else "")
             return PostBundle(
@@ -276,7 +286,8 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
                          # handle tagging: entity dicts + the digest text as the
                          # LinkedIn same-name-org guard's context
                          "entities": digest_entities(picked),
-                         "tag_context": text},
+                         "tag_context": text,
+                         "recap_image": recap_image},
             )
 
         get_stats = getattr(src, "stats", None)

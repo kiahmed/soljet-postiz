@@ -41,6 +41,43 @@ from src.lib.recipes import insights_tkey, recipe_graph_stats  # noqa: E402
 from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
 
 
+def _recap_image(tier, obj: str, cache: dict) -> Path | None:
+    """Download CKG's recap chart (write-once, private bucket) pinned to its
+    generation into the imagery cache; None -> post text-only. A missing or
+    denied read is logged loudly: a permissions gap would otherwise silently
+    turn every digest text-only."""
+    if not obj:
+        return None
+    if obj in cache:
+        return cache[obj]
+    path = None
+    try:
+        from google.cloud import storage
+        from src.lib.card_images import _gcs_config
+        cfg = _gcs_config(tier, "graphs")
+        blob = storage.Client().bucket(cfg[0]).get_blob(obj) if cfg else None
+        if blob is None:
+            print(f"[graph_stats] recap image not there yet: {obj} — posting text-only", file=sys.stderr)
+        elif (blob.size or 0) > 10_000_000:
+            print(f"[graph_stats] recap image too large ({blob.size} B): {obj} — posting text-only", file=sys.stderr)
+        else:
+            gen = blob.generation
+            dest = Path("data/imagery_cache") / f"recap_{obj.replace('/', '_')}_{gen}"
+            if not dest.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                data = blob.download_as_bytes(if_generation_match=gen)
+                if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    print(f"[graph_stats] recap image is not a PNG: {obj} — posting text-only", file=sys.stderr)
+                    cache[obj] = None
+                    return None
+                dest.write_bytes(data)
+            path = dest
+    except Exception as e:  # noqa: BLE001 — never block the digest on its image
+        print(f"[graph_stats] recap image unreadable ({obj}): {e} — posting text-only", file=sys.stderr)
+    cache[obj] = path
+    return path
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True, help="e.g. arboryx.robotics")
@@ -65,6 +102,8 @@ def main() -> int:
 
     client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY")) if args.push else None
     ec = None  # unused: entities come from each bundle
+    img_cache: dict = {}
+    uploaded: dict = {}
     for iid in iids:
         lbl = channel_label(tier, iid)
         try:
@@ -82,7 +121,10 @@ def main() -> int:
         parts, ec = channel_parts(tier, lbl, source_type=bundle.source_type,
                                   source_id=bundle.source_id, parts=base,
                                   entities_cache=bundle.context.get("entities") or [])
+        img = _recap_image(tier, bundle.context.get("recap_image", ""), img_cache)
         print(f"--- [{lbl}] {bundle.source_id} ---")
+        if img:
+            print(f"[media] {img}")
         for p in parts:
             print(p)
             print()
@@ -111,7 +153,17 @@ def main() -> int:
                 continue
 
         try:
-            resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode)
+            media = None
+            if img:
+                if img not in uploaded:
+                    try:
+                        up = client.upload(img)
+                        uploaded[img] = {"id": up["id"], "path": up["path"]}
+                    except Exception as e:  # noqa: BLE001 — image is a bonus, text still posts
+                        print(f"[{lbl}] recap image upload failed: {e} — text-only", file=sys.stderr)
+                        uploaded[img] = None
+                media = [uploaded[img]] if uploaded[img] else None
+            resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode, media=media)
             r = resp[0] if isinstance(resp, list) and resp else resp
             pid = (r or {}).get("postId") or (r or {}).get("id")
         except Exception as e:  # noqa: BLE001 — one channel's failure can't block the other

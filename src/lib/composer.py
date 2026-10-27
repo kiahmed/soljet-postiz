@@ -748,20 +748,64 @@ def _clean_headline(h: str, max_len: int = 200) -> str:
     return h if len(h) <= max_len else h[: max_len - 1].rstrip() + "…"
 
 
+_RECAP_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+_CKG_TAG = re.compile(r"#[A-Za-z0-9_]{2,30}")
+
+
+def recap_lead_card(picked: list[dict], recap: dict | None) -> dict | None:
+    """The recap card matching the FIRST picked row (graph-posters.md): a hub
+    row -> its entity's "mix" card; a trend row -> the "concentration" card for
+    its rel_type. None when there's no recap or no match — never fall back to
+    a card whose subject the post doesn't name."""
+    if not recap or not picked:
+        return None
+    first = picked[0]
+    for c in recap.get("cards") or []:
+        if not isinstance(c, dict) or not _RECAP_ID.fullmatch(str(c.get("id") or "")):
+            continue
+        if first.get("type") == "chokepoint":
+            if c.get("kind") == "mix" and c.get("entity") == first.get("entity"):
+                return c
+        elif c.get("kind") == "concentration" and c.get("rel_type") == first.get("rel_type"):
+            return c
+    return None
+
+
+def _kg_digest_tags(picked: list[dict], sector: str, limit: int = 5) -> list[str]:
+    """Union of the picked rows' own `hashtags` (CKG), row order, deduped; the
+    sector tag stays last when trimming. [] when no row carries any (-> the
+    local _digest_hashtags fallback). Never invents a tag."""
+    sector_tag = (SECTOR_HASHTAGS.get((sector or "").strip().lower()) or [""])[0].lower()
+    out: list[str] = []
+    for i in picked:
+        for t in i.get("hashtags") or []:
+            if isinstance(t, str) and _CKG_TAG.fullmatch(t) and t.lower() not in {x.lower() for x in out}:
+                out.append(t)
+    if len(out) > limit:
+        keep = [t for t in out if t.lower() != sector_tag]
+        sec = [t for t in out if t.lower() == sector_tag]
+        out = keep[:limit - len(sec)] + sec
+    return out
+
+
 def compose_graph_digest(tier: Tier, picked: list[dict], *, sector: str = "",
-                         now: datetime | None = None) -> str:
+                         now: datetime | None = None, lead: dict | None = None) -> str:
     """The weekly 'what moved in the sector' post. DETERMINISTIC, no LLM:
     each bullet is an insight's own headline, verbatim. 🔺 = hub entity,
-    📈 = sector-wide trend. The deep link is appended by the recipe."""
+    📈 = sector-wide trend. The deep link is appended by the recipe. `lead` =
+    the recap card for the first row: its verdict opens the post (the takeaway;
+    the headlines are the evidence)."""
     if not picked:
         raise ValueError("compose_graph_digest: nothing to post")
     now = now or datetime.now(timezone.utc)
     monday = now - timedelta(days=now.weekday())
     sec = f"{sector.title()} " if sector else ""
-    lines = [f"📈 {sec}graph signal · week of {monday.strftime('%b')} {monday.day}", ""]
+    verdict = _clean_headline((lead or {}).get("verdict") or "", max_len=140)
+    lines = ([verdict, ""] if verdict else []) + \
+        [f"📈 {sec}graph signal · week of {monday.strftime('%b')} {monday.day}", ""]
     for i in picked:
         h = _clean_headline(i["headline"])
         if h:
             lines.append(f"{'🔺' if i.get('type') == 'chokepoint' else '📈'} {h}")
-    tags = " ".join(_digest_hashtags(picked, sector))
+    tags = " ".join(_kg_digest_tags(picked, sector) or _digest_hashtags(picked, sector))
     return "\n".join(lines) + f"\n\n{tags}\n\nWhere the connections are clustering ↓"
