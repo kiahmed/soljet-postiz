@@ -38,7 +38,7 @@ from src.lib.channel_dispatch import channel_label, channel_parts  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
 from src.lib.recipes import insights_tkey, recipe_graph_stats  # noqa: E402
-from src.lib.thread import max_chars_for_channel, split_for_thread  # noqa: E402
+from src.lib.thread import length_fn_for_channel, max_chars_for_channel, split_for_thread  # noqa: E402
 
 
 def _recap_image(tier, obj: str, cache: dict) -> Path | None:
@@ -113,7 +113,7 @@ def main() -> int:
             continue  # not an error — a quiet week is expected sometimes
         keys = bundle.context.get("insight_keys", [])
 
-        base = split_for_thread(bundle.text, max_chars=max_chars_for_channel(lbl))
+        base = split_for_thread(bundle.text, max_chars=max_chars_for_channel(lbl), length_fn=length_fn_for_channel(lbl))
         # Digest entities get @handles / LinkedIn mentions through the same path
         # as card posts (HANDLE_INJECTION, resolver chain, URN guard, per-tag fit).
         # The cleaned headlines stay mention-free; tags go only on the hashtag line.

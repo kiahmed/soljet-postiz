@@ -47,7 +47,7 @@ from src.lib.posted_log import mark_posted, pending_ids_for, posted_ids_for
 from src.lib.postiz_client import PostizClient
 from src.lib.composer import card_confidence
 from src.lib.recipes import PostBundle, recipe_graph, recipe_single
-from src.lib.thread import max_chars_for_channel, split_for_thread
+from src.lib.thread import length_fn_for_channel, max_chars_for_channel, split_for_thread
 
 # Postgres/Temporal live in docker on the same host as this script.
 PG_CONTAINER = os.getenv("POSTIZ_PG_CONTAINER", "postiz-postgres")
@@ -559,7 +559,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
             note = (f" → attaches the {kind} image" if pol == "attach"
                     else " → no media; platform renders the link card" if pol == "link_card"
                     else f" → {media_paths[0] if media_paths else 'no media'}")
-            ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(lbl),
+            ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(lbl), length_fn=length_fn_for_channel(lbl),
                                              continuation_prefix=_thread_lead_in(text))
             ch_parts, entities_cache = channel_parts(
                 tier, lbl, source_type=source_type, source_id=source_id,
@@ -627,7 +627,7 @@ def run_tier(tier_id: str, *, push: bool, since, regenerate: bool = False,
         # and a per-channel thread split — X's 280-char cap needs one, LinkedIn's
         # ~3000-char cap doesn't, so applying the shared `parts` (X-sized) to
         # every channel used to turn a >280-char post into two LinkedIn posts.
-        ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(label),
+        ch_base_parts = split_for_thread(text, max_chars=max_chars_for_channel(label), length_fn=length_fn_for_channel(label),
                                          continuation_prefix=_thread_lead_in(text))
         ch_parts, entities_cache = channel_parts(
             tier, label, source_type=source_type, source_id=source_id,

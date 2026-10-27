@@ -16,7 +16,7 @@ from .handles import resolve_handle
 from .imagery import auto_media
 from .recipes import PostBundle
 from .sources.factory import build_source
-from .thread import max_chars_for_channel
+from .thread import length_fn_for_channel, max_chars_for_channel
 
 _URL_RE = re.compile(r"https?://\S+")
 
@@ -254,6 +254,7 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
     new_parts = list(parts)
     if tags and parts:
         limit = max_chars_for_channel(label)
+        lf = length_fn_for_channel(label)   # X: Postiz's own counter (emoji, ↳ →, full URL)
         # The hashtag paragraph is usually in part 0, but a thread split (X's
         # 280) can push it into a later part — tag whichever part carries it.
         pi = next((n for n, p in enumerate(parts)
@@ -263,15 +264,19 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
         idx = next((i for i, p in enumerate(paras) if "#" in p), 0)
         fitted: list[str] = []
         for t in tags:
-            candidate_len = len(pt) + sum(len(x) + 1 for x in fitted + [t])
-            if candidate_len <= limit:
+            if lf(pt + "".join(" " + x for x in fitted + [t])) <= limit:
                 fitted.append(t)
         if fitted:
             paras[idx] = f"{paras[idx].rstrip()} {' '.join(fitted)}"
             new_parts[pi] = "\n\n".join(paras)
     # UTM-tag our own links AFTER tag fitting: fitting measures raw length and
     # X counts any URL as 23 chars, so the longer URL can't break that budget.
-    new_parts = [tag_links(tier, label, p, content=source_type) for p in new_parts]
+    lf, limit = length_fn_for_channel(label), max_chars_for_channel(label)
+    tagged = [tag_links(tier, label, p, content=source_type) for p in new_parts]
+    # Postiz counts a link's FULL raw length (UTM query included) on X, not t.co's
+    # 23 — a part that fit before tagging can land over 280 ("post is too long",
+    # real incident: 211 -> 321). Keep the plain link for any part the UTM pushes over.
+    new_parts = [t if lf(t) <= limit else p for t, p in zip(tagged, new_parts)]
     if label.upper() == "X":
         new_parts = [re.sub(r"\n{2,}", "\n", p) for p in new_parts]
     return reply_link_parts(tier, label, new_parts), entities_cache

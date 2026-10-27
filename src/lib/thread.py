@@ -16,6 +16,9 @@ marker_reserve.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+
+from .xlen import x_len
 
 _BOUNDARIES = [
     re.compile(r"\n\n+"),                # paragraph
@@ -37,8 +40,15 @@ def max_chars_for_channel(label: str) -> int:
     return 280 if label.upper() == "X" else 3000
 
 
+def length_fn_for_channel(label: str) -> Callable[[str], int]:
+    """How a channel's validator measures a part: X (via Postiz) = max(UTF-16
+    length, twitter-text weighted length) — see xlen.py; everything else len()."""
+    return x_len if label.upper() == "X" else len
+
+
 def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8,
-                     continuation_prefix: str = "") -> list[str]:
+                     continuation_prefix: str = "",
+                     length_fn: Callable[[str], int] = len) -> list[str]:
     """Return [text] if it fits; otherwise a list of ' i/n'-suffixed chunks ≤ max_chars.
 
     continuation_prefix: prepended to every part AFTER the first (never the
@@ -48,25 +58,29 @@ def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8,
     individual part where adding it would push that part over max_chars —
     this never trades self-containment for an over-length tweet."""
     text = text.strip()
-    if len(text) <= max_chars:
+    if length_fn(text) <= max_chars:
         return [text]
 
     budget = max_chars - marker_reserve
     chunks: list[str] = []
     rest = text
     while rest:
-        if len(rest) <= budget:
+        if length_fn(rest) <= budget:
             chunks.append(rest.strip())
             break
-        cut = budget
-        advance = budget
-        for pat in _BOUNDARIES:
-            matches = list(pat.finditer(rest, 0, budget + 1))
-            if matches:
-                m = matches[-1]
-                cut = m.start()
-                advance = m.end()
+        width = budget   # chars to search for a cut; shrinks until the CHUNK measures within budget
+        while True:
+            cut = advance = width
+            for pat in _BOUNDARIES:
+                matches = list(pat.finditer(rest, 0, width + 1))
+                if matches:
+                    m = matches[-1]
+                    cut = m.start()
+                    advance = m.end()
+                    break
+            if length_fn(rest[:cut].strip()) <= budget or width <= 1:
                 break
+            width = max(1, width - max(1, length_fn(rest[:cut].strip()) - budget))
         chunks.append(rest[:cut].strip())
         rest = rest[advance:].lstrip()
 
@@ -75,6 +89,6 @@ def split_for_thread(text: str, max_chars: int = 280, marker_reserve: int = 8,
     if continuation_prefix:
         for i in range(1, len(parts)):
             candidate = f"{continuation_prefix} — {parts[i]}"
-            if len(candidate) <= max_chars:
+            if length_fn(candidate) <= max_chars:
                 parts[i] = candidate
     return parts
