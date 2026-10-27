@@ -123,6 +123,13 @@ every doc and every write for no new information.
 ]
 ```
 
+> **Wording changed 2026-10-26** (see "Weekly recap" below): an entity whose
+> edges are of mixed types now reads e.g. `"Booster Robotics: 16 new
+> connections in 30 days (9.6x prior 90-day rate), led by 8 competitive
+> collisions"` (live, 2026-10-26). The old form labelled all 16 as the top
+> type — overstated; the XPeng example above has the same flaw. Still
+> quote `headline` verbatim; new fields `top_rel` / `top_rel_count` / `hashtags`.
+
 - `type: "chokepoint"` → the subject is an **entity** (`entity` key present).
 - `type: "velocity"` → the subject is a **relationship type** across the whole
   sector (`rel_type` key present).
@@ -156,3 +163,123 @@ refuses a multiplier below 3 baseline edges (`insights.min_baseline`), plus
 floors on recent volume (`min_recent`) and ratio (`min_growth_ratio`). If a
 claim ever looks inflated, those knobs are in the KG's `config/config.yaml`,
 not here.
+
+---
+
+# Weekly recap — digest record, images, hashtags (2026-10-26)
+
+**Status:** committed in the KG repo (`10afe7a`), **live once the KG deploy
+lands**. Up to 5 cards per week (generic category names are filtered out
+of the sector card; it's omitted only when there's no trend insight or every
+name is generic). Until then the fields below are absent — keep posting the digest
+text-only. Detect readiness by presence, never by date.
+KG spec: `technical_spec.md` §2.9b.
+
+## What changed on the KG side
+
+1. **Honest entity headlines.** `graph_insights[]` chokepoint headlines no
+   longer call all of an entity's edges by its top type:
+   `"HD Hyundai: 16 new connections in 30 days (9.6x prior 90-day rate), led by 9 partnerships"`.
+   Single-type entities read as before. New fields: `top_rel`, `top_rel_count`.
+2. **Hashtags on every insight row** — `graph_insights[i].hashtags`
+   (entity, its topic, sector; sector trends: topic + sector). Stop guessing.
+3. **A `recap` block** for the week: chart cards with a one-line verdict, and
+   a rendered image per card.
+
+## Where things are
+
+| What | Location | Lifetime |
+|---|---|---|
+| Insights (+ `hashtags`) | `CKG-Robotics/graph/sectors/Robotics` → `graph_insights` | overwritten daily |
+| Recap, live copy | same doc → `recap` | overwritten daily |
+| **Recap, the week's record** | `CKG-Robotics/recaps/weeks/<YYYY-Www>` (e.g. `2026-W44`) | **write-once** — created by the first export of the ISO week that has recap cards (normally Monday's; can slip a day if Monday has none), then never changes |
+| Recap card images | `gs://robotics-cards/recaps/Robotics/<YYYY-Www>/<card.id>.png` | **write-once** (only a manual `recaps_force` re-render overwrites); deleted by the bucket's 90-day lifecycle rule |
+
+Images are in the same **private** bucket as card PNGs, read the same way
+(`storage.Client()` with your runtime's Application Default Credentials; no
+public route yet). Bucket IAM is bucket-wide, not per-prefix, so whatever
+lets `card_images.py` read `cards/` also reads `recaps/`. **Verify in the
+runtime that posts** — the only evidence so far is this repo's own local
+cache (`data/render_gcs_cache.json`, gitignored) showing a successful
+`cards/` listing on 2026-09-05 from a local run, which may not be the
+posting identity:
+
+```bash
+gcloud storage ls gs://robotics-cards/recaps/Robotics/   # as the posting identity
+```
+
+`_gcs_list_ids` swallows a 403; for recap images log a missing/denied read
+loudly, or a permissions gap silently turns every digest text-only.
+
+## Record shape (`recap`, identical in both places)
+
+Illustrative (values from the 2026-W44 sample; the week doc additionally
+carries `"sector": "Robotics"`):
+
+```jsonc
+{
+  "week": "2026-W44", "as_of": "2026-10-26", "window_days": 30, "baseline_days": 90,
+  "groups": ["Competition", "Partnership", "Deployment", "Supply & tech", "Capital & talent", "Other"],
+  // digest default — same order as cards[] / graph_insights[] (lead entity first)
+  "hashtags": ["#BoosterRobotics", "#HuggingFace", "#Integration", "#Robotics"],
+  "cards": [                                   // ordered: cards[0] = lead card
+    {"id": "mix-booster-robotics", "kind": "mix", "entity": "Booster Robotics",
+     "insight_headline": "Booster Robotics: 16 new connections in 30 days (9.6x …), led by 8 competitive collisions",
+     "title":   "What's behind Booster Robotics' surge?",
+     "verdict": "Booster Robotics is now a target: rivals are lining up.",   // ≤10 words
+     "big": "16 new connections", "sub": "in the last 30 days · was about 2 a month before",
+     "sentence": "Mostly rivalry: 11 of 16.",
+     "hashtags": ["#BoosterRobotics", "#Competition", "#Robotics"],
+     "data": {…}},                                                           // chart data — don't parse
+    {"id": "concentration-integrates_with", "kind": "concentration", "rel_type": "integrates_with", …},
+    {"id": "grounding-booster-robotics", "kind": "grounding", "entity": "Booster Robotics", …}
+  ]
+}
+```
+
+Card kinds: `mix` (what an entity's surge is made of), `grounding` (how much
+is reported vs model-inferred), `concentration` (who the sector leans on —
+matches the velocity insight via `rel_type`).
+
+## How to build the Monday digest post (do it in this order)
+
+1. **Read the week record**, not the live copy:
+   `week = now_utc.strftime("%G-W%V")` → `CKG-Robotics/recaps/weeks/{week}`.
+   Missing → fall back to today's text-only digest (graph doc
+   `graph_insights`), exactly as now.
+2. **Pick insights as you do today** from `graph_insights` (strongest first,
+   your 21-day `posted_log` skip). The recap does NOT apply your skip — you do.
+3. **Text:** quote each picked row's `headline` verbatim (unchanged rule).
+4. **Lead image + opening line:** for the first picked row, find its card —
+   chokepoint row → card with `kind == "mix"` and `entity == row.entity`;
+   velocity row → card with `kind == "concentration"` and
+   `rel_type == row.rel_type`. Open the post with that card's **`verdict`**
+   (it is the takeaway; the headline is the evidence) and attach
+   `recaps/Robotics/{week}/{card.id}.png`.
+   No matching card (e.g. your skip removed both recap entities) → use
+   `cards[0]`'s image only if its subject is in your post; otherwise post
+   text-only. **Never attach an image for a subject the text doesn't mention.**
+5. **Hashtags:** union the `hashtags` of exactly the rows you posted, in row
+   order, deduped, then take a prefix to fit the channel (keep the sector tag
+   last, same helper as `card.hashtags`). Use `recap.hashtags` only if you post
+   the recap's default set unchanged. Never invent tags.
+6. **Image not there yet** (render runs after ingest; Monday's can lag the
+   export by minutes): check existence, retry later in the window, else post
+   text-only. A missing image is "not ready", never an error.
+7. **Link:** keep the site root for now; the Recap tab is
+   `https://robotics.arboryx.ai/#view=recap` (sign-in required; premium-gated
+   later).
+
+## Rules
+
+- **Don't re-derive numbers or verdicts.** `verdict`, `big`, `sentence` are
+  computed from the same windows as the headlines; rewording them can make
+  the image and text disagree.
+- **Don't post `grounding` cards alone** — "64% confirmed" needs the subject's
+  headline next to it.
+- **Cache on the image URL and the week record** — both are write-once in
+  normal operation (only a manual `recaps_force` re-render overwrites an
+  image; objects expire after 90 days). Unlike `graphs/<card_id>.png`, which
+  routine `force` backfills re-render in place.
+- Footer on every image already says *Information only — not investment
+  advice*; keep posts free of buy/valuation language to match.
