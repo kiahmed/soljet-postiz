@@ -14,7 +14,7 @@ from . import posted_log
 from .composer import (_append_hashtags, _llm_rewrite, _read_context, compose_catalyst,
                        compose_finding, compose_graph, compose_graph_digest,
                        compose_graph_insight, compose_graph_stats, digest_entities, insight_key, pick_digest,
-                       recap_lead_card)
+                       recap_cards_for, recap_lead_card)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -191,6 +191,9 @@ def recipe_graph(tier: Tier, source_id: str) -> PostBundle:
                    f"(no cards_json/firestore_cards source configured)")
 
 
+RECAP_IMAGES_MAX = 2
+
+
 def insights_tkey(tier_id: str, channel: str) -> str:
     """posted_log key for the weekly digest. Per CHANNEL: LinkedIn and X fire
     as separate scheduler rows, and a shared key would let the first one mark
@@ -271,8 +274,11 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
             recap = get_recap(week) if callable(get_recap) else None
             lead = recap_lead_card(picked, recap)
             rsec = str((recap or {}).get("sector") or sector.title())
-            recap_image = (f"recaps/{rsec}/{week}/{lead['id']}.png"
-                           if lead and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", rsec) else "")
+            # Up to 2 chart images (the first two picked rows' cards) — enough to
+            # tease; the remaining cards stay for the paid Recap tab.
+            recap_images = ([f"recaps/{rsec}/{week}/{c['id']}.png"
+                             for c in recap_cards_for(picked, recap, RECAP_IMAGES_MAX)]
+                            if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", rsec) else [])
             text = append_link_to_text(
                 compose_graph_digest(tier, picked, sector=sector, lead=lead),
                 f"https://{tier.raw.get('PUBLISH_SUBDOMAIN', '').strip()}"
@@ -287,7 +293,7 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
                          # LinkedIn same-name-org guard's context
                          "entities": digest_entities(picked),
                          "tag_context": text,
-                         "recap_image": recap_image},
+                         "recap_images": recap_images},
             )
 
         get_stats = getattr(src, "stats", None)

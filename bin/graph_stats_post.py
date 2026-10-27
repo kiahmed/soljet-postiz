@@ -121,9 +121,10 @@ def main() -> int:
         parts, ec = channel_parts(tier, lbl, source_type=bundle.source_type,
                                   source_id=bundle.source_id, parts=base,
                                   entities_cache=bundle.context.get("entities") or [])
-        img = _recap_image(tier, bundle.context.get("recap_image", ""), img_cache)
+        imgs = [i for i in (_recap_image(tier, o, img_cache)
+                            for o in bundle.context.get("recap_images", [])) if i]
         print(f"--- [{lbl}] {bundle.source_id} ---")
-        if img:
+        for img in imgs:
             print(f"[media] {img}")
         for p in parts:
             print(p)
@@ -153,17 +154,18 @@ def main() -> int:
                 continue
 
         try:
-            media = None
-            if img:
+            media = []
+            for img in imgs:
                 if img not in uploaded:
                     try:
                         up = client.upload(img)
                         uploaded[img] = {"id": up["id"], "path": up["path"]}
-                    except Exception as e:  # noqa: BLE001 — image is a bonus, text still posts
-                        print(f"[{lbl}] recap image upload failed: {e} — text-only", file=sys.stderr)
+                    except Exception as e:  # noqa: BLE001 — images are a bonus, text still posts
+                        print(f"[{lbl}] recap image upload failed: {e} — skipping it", file=sys.stderr)
                         uploaded[img] = None
-                media = [uploaded[img]] if uploaded[img] else None
-            resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode, media=media)
+                if uploaded[img]:
+                    media.append(uploaded[img])
+            resp = client.create_post(parts=parts, integration_ids=[iid], mode=args.mode, media=media or None)
             r = resp[0] if isinstance(resp, list) and resp else resp
             pid = (r or {}).get("postId") or (r or {}).get("id")
         except Exception as e:  # noqa: BLE001 — one channel's failure can't block the other

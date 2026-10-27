@@ -752,23 +752,36 @@ _RECAP_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
 _CKG_TAG = re.compile(r"#[A-Za-z0-9_]{2,30}")
 
 
-def recap_lead_card(picked: list[dict], recap: dict | None) -> dict | None:
-    """The recap card matching the FIRST picked row (graph-posters.md): a hub
-    row -> its entity's "mix" card; a trend row -> the "concentration" card for
-    its rel_type. None when there's no recap or no match — never fall back to
-    a card whose subject the post doesn't name."""
+def recap_cards_for(picked: list[dict], recap: dict | None, limit: int = 1) -> list[dict]:
+    """Recap cards matching the picked rows, in row order (graph-posters.md): a
+    hub row -> its entity's "mix" card; a trend row -> the "concentration" card
+    for its rel_type. Rows without a card are skipped — never attach a chart
+    whose subject the post doesn't name. Ids that aren't plain tokens are
+    ignored (they become object paths)."""
+    out: list[dict] = []
     if not recap or not picked:
-        return None
-    first = picked[0]
-    for c in recap.get("cards") or []:
-        if not isinstance(c, dict) or not _RECAP_ID.fullmatch(str(c.get("id") or "")):
-            continue
-        if first.get("type") == "chokepoint":
-            if c.get("kind") == "mix" and c.get("entity") == first.get("entity"):
-                return c
-        elif c.get("kind") == "concentration" and c.get("rel_type") == first.get("rel_type"):
-            return c
-    return None
+        return out
+    cards = [c for c in (recap.get("cards") or [])
+             if isinstance(c, dict) and _RECAP_ID.fullmatch(str(c.get("id") or ""))]
+    for row in picked:
+        for c in cards:
+            hit = ((row.get("type") == "chokepoint" and c.get("kind") == "mix"
+                    and c.get("entity") == row.get("entity"))
+                   or (row.get("type") != "chokepoint" and c.get("kind") == "concentration"
+                       and c.get("rel_type") == row.get("rel_type")))
+            if hit and c not in out:
+                out.append(c)
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+def recap_lead_card(picked: list[dict], recap: dict | None) -> dict | None:
+    """The recap card for the FIRST picked row only (its verdict opens the
+    post); None if that row has no card."""
+    got = recap_cards_for(picked[:1], recap, 1)
+    return got[0] if got else None
 
 
 def _kg_digest_tags(picked: list[dict], sector: str, limit: int = 5) -> list[str]:
