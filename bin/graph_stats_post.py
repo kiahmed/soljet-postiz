@@ -33,6 +33,7 @@ sys.path.insert(0, str(REPO_ROOT / "bin"))
 import daily  # noqa: E402  (poll_publish, _kind_channel_enabled)
 from bin._common import integration_ids_for, load_dotenv  # noqa: E402
 from src.lib import posted_log  # noqa: E402
+from src.lib import channel_dispatch  # noqa: E402
 from src.lib.channel_dispatch import channel_label, channel_parts  # noqa: E402
 from src.lib.config_loader import load_tier  # noqa: E402
 from src.lib.postiz_client import PostizClient  # noqa: E402
@@ -63,7 +64,7 @@ def main() -> int:
         return 0
 
     client = PostizClient(api_key=os.environ.get("POSTIZ_API_KEY")) if args.push else None
-    ec = None
+    ec = None  # unused: entities come from each bundle
     for iid in iids:
         lbl = channel_label(tier, iid)
         try:
@@ -74,8 +75,13 @@ def main() -> int:
         keys = bundle.context.get("insight_keys", [])
 
         base = split_for_thread(bundle.text, max_chars=max_chars_for_channel(lbl))
+        # Digest entities get @handles / LinkedIn mentions through the same path
+        # as card posts (HANDLE_INJECTION, resolver chain, URN guard, per-tag fit).
+        # The cleaned headlines stay mention-free; tags go only on the hashtag line.
+        channel_dispatch._ctx_cache[bundle.source_id] = bundle.context.get("tag_context", "")
         parts, ec = channel_parts(tier, lbl, source_type=bundle.source_type,
-                                  source_id=bundle.source_id, parts=base, entities_cache=ec)
+                                  source_id=bundle.source_id, parts=base,
+                                  entities_cache=bundle.context.get("entities") or [])
         print(f"--- [{lbl}] {bundle.source_id} ---")
         for p in parts:
             print(p)

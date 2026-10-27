@@ -12,7 +12,7 @@ from pathlib import Path
 from . import posted_log
 from .composer import (_append_hashtags, _llm_rewrite, _read_context, compose_catalyst,
                        compose_finding, compose_graph, compose_graph_digest,
-                       compose_graph_insight, compose_graph_stats, insight_key, pick_digest)
+                       compose_graph_insight, compose_graph_stats, digest_entities, insight_key, pick_digest)
 from .config_loader import Tier
 from .funnel import append_link_to_text, deep_link_for
 from .sources.factory import build_source, first_firestore
@@ -272,7 +272,11 @@ def recipe_graph_stats(tier: Tier, channel: str = "") -> PostBundle:
                 source_type="graph_stats",
                 source_id=source_id,
                 context={"title": text.splitlines()[0][:120] if text else "",
-                         "insight_keys": [insight_key(i) for i in picked]},
+                         "insight_keys": [insight_key(i) for i in picked],
+                         # handle tagging: entity dicts + the digest text as the
+                         # LinkedIn same-name-org guard's context
+                         "entities": digest_entities(picked),
+                         "tag_context": text},
             )
 
         get_stats = getattr(src, "stats", None)

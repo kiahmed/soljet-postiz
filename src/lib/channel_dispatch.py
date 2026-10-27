@@ -251,20 +251,24 @@ def channel_parts(tier, label: str, *, source_type: str, source_id: str,
         entities_cache = _entities_for(tier, source_type, source_id)
     ctx = _ctx_cache.get(source_id, "")
     tags = entity_tags(tier, label, entities_cache, context=ctx) if entities_cache else []
-    p0 = parts[0] if parts else ""
+    new_parts = list(parts)
     if tags and parts:
         limit = max_chars_for_channel(label)
-        paras = p0.split("\n\n")
+        # The hashtag paragraph is usually in part 0, but a thread split (X's
+        # 280) can push it into a later part — tag whichever part carries it.
+        pi = next((n for n, p in enumerate(parts)
+                   if any("#" in q for q in p.split("\n\n"))), 0)
+        pt = parts[pi]
+        paras = pt.split("\n\n")
         idx = next((i for i, p in enumerate(paras) if "#" in p), 0)
         fitted: list[str] = []
         for t in tags:
-            candidate_len = len(p0) + sum(len(x) + 1 for x in fitted + [t])
+            candidate_len = len(pt) + sum(len(x) + 1 for x in fitted + [t])
             if candidate_len <= limit:
                 fitted.append(t)
         if fitted:
             paras[idx] = f"{paras[idx].rstrip()} {' '.join(fitted)}"
-            p0 = "\n\n".join(paras)
-    new_parts = ([p0] + list(parts[1:])) if parts else parts
+            new_parts[pi] = "\n\n".join(paras)
     # UTM-tag our own links AFTER tag fitting: fitting measures raw length and
     # X counts any URL as 23 chars, so the longer URL can't break that budget.
     new_parts = [tag_links(tier, label, p, content=source_type) for p in new_parts]

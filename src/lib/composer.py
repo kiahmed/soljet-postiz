@@ -686,15 +686,26 @@ def pick_digest(insights: list[dict], seen: dict[str, datetime], *,
     return picked[:_DIGEST_MAX] if len(picked) >= 2 else []
 
 
+def digest_entities(picked: list[dict]) -> list[dict]:
+    """Brand entities the digest names, as entity dicts for handle tagging
+    (channel_dispatch.entity_tags). Generic phrases ("Chinese Component
+    Manufacturers") are skipped — they have no account to tag."""
+    out: list[dict] = []
+    for i in picked:
+        name = (i.get("entity") or "").strip()
+        words = name.split()
+        if name and len(words) <= 3 and not ({w.lower() for w in words} & _GENERIC_NAME_WORDS) \
+                and all(e["name"] != name for e in out):
+            out.append({"name": name})
+    return out
+
+
 def _digest_hashtags(picked: list[dict], sector: str) -> list[str]:
     tags: list[str] = []
-    for i in picked:                    # brand entities (<=2); generic phrases skipped
-        name = i.get("entity") or ""
-        words = name.split()
-        if name and len(words) <= 3 and not ({w.lower() for w in words} & _GENERIC_NAME_WORDS):
-            t = _camel_tag(name)
-            if t and len(tags) < 2:
-                tags.append(t)
+    for e in digest_entities(picked):   # brand entities (<=2)
+        t = _camel_tag(e["name"])
+        if t and len(tags) < 2:
+            tags.append(t)
     topics: list[str] = []
     for i in picked:
         t = _insight_rel(i)

@@ -249,7 +249,7 @@ def to_mention(handle: str, fallback_name: str | None = None, *,
     res = resolve(handle)
     if not res:
         return None
-    name = (res.get("name") or fallback_name or _slug(handle)).strip()
+    name = re.sub(r"[\[\]()]", "", res.get("name") or fallback_name or _slug(handle)).strip()
     probe = entity_name or fallback_name or name
     if context and _collision_prone(probe):
         conf = _context_confidence(f"{res.get('name','')} {res.get('desc','')}",
