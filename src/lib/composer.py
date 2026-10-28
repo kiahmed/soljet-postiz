@@ -765,9 +765,9 @@ def recap_cards_for(picked: list[dict], recap: dict | None, limit: int = 1) -> l
              if isinstance(c, dict) and _RECAP_ID.fullmatch(str(c.get("id") or ""))]
     for row in picked:
         for c in cards:
-            hit = ((row.get("type") == "chokepoint" and c.get("kind") == "mix"
+            hit = ((row.get("type") == "chokepoint" and c.get("kind") in ("entity", "mix")
                     and c.get("entity") == row.get("entity"))
-                   or (row.get("type") != "chokepoint" and c.get("kind") == "concentration"
+                   or (row.get("type") != "chokepoint" and c.get("kind") in ("sector", "concentration")
                        and c.get("rel_type") == row.get("rel_type")))
             if hit and c not in out:
                 out.append(c)
@@ -782,6 +782,32 @@ def recap_lead_card(picked: list[dict], recap: dict | None) -> dict | None:
     post); None if that row has no card."""
     got = recap_cards_for(picked[:1], recap, 1)
     return got[0] if got else None
+
+
+def kg_explorer_url(base: str, entity: str, days: int = 30) -> str:
+    """Deep link into CKG's Graph Explorer for one company, last `days` days:
+    `<site>/#view=graph&q=<company>&tw=<days>&twx=1` (hash params read by the
+    frontend's parseHash; twx=1 = honour the window, don't auto-widen). "" when
+    there is no site or the name isn't a plain company name."""
+    from urllib.parse import quote
+    entity = (entity or "").strip()
+    if not base or not entity or len(entity) > 80 or re.search(r"[\x00-\x1f<>\"\\]", entity):
+        return ""
+    return f"{base.rstrip('/')}/#view=graph&q={quote(entity)}&tw={int(days)}&twx=1"
+
+
+def compose_recap_card(tier: Tier, card: dict) -> str:
+    """ONE recap card = one post. DETERMINISTIC: CKG's own verdict opens it, the
+    card's `insight_headline` is quoted verbatim, then the card's own hashtags.
+    The company link is appended by the caller. No LLM, nothing re-derived."""
+    verdict = _clean_headline(card.get("verdict") or "", max_len=140)
+    headline = _clean_headline(card.get("insight_headline") or "", max_len=220)
+    if not verdict or not headline:
+        raise ValueError("compose_recap_card: card has no verdict/insight_headline")
+    tags = " ".join(t for t in (card.get("hashtags") or [])
+                    if isinstance(t, str) and _CKG_TAG.fullmatch(t))
+    return f"{verdict}\n\n{headline}\n\n{tags}\n\nSee the connections around them ↓" if tags else \
+        f"{verdict}\n\n{headline}\n\nSee the connections around them ↓"
 
 
 def _kg_digest_tags(picked: list[dict], sector: str, limit: int = 5) -> list[str]:
